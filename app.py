@@ -410,7 +410,7 @@ bg_app, bg_sidebar, card, bg_subcard, border_col, text_main, text_sub, accent_co
 
 st.markdown(f"""
 <style>
-    /* Đồng bộ Dark Mode cho thanh chat input và đáy trang */
+    /* Đồng bộ màu theo chế độ Sáng/Tối cho thanh chat input */
     [data-testid="stBottom"], [data-testid="stBottom"] > div {{
         background-color: {bg_app} !important;
     }}
@@ -420,12 +420,14 @@ st.markdown(f"""
         border-radius: 12px !important;
     }}
     [data-testid="stChatInput"] textarea {{
-        background-color: transparent !important;
+        background-color: {input_bg} !important;
         color: {text_main} !important;
+    }}
+    [data-testid="stChatInput"] textarea::placeholder {{
+        color: {text_sub} !important;
     }}
     [data-testid="stChatInput"] button {{
         color: {accent_col} !important;
-        background: transparent !important;
     }}
 </style>
 """, unsafe_allow_html=True)
