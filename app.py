@@ -409,6 +409,7 @@ dark_mode = st.session_state.settings.get("dark_mode", False)
 bg_app, bg_sidebar, card, bg_subcard, border_col, text_main, text_sub, accent_col, input_bg = ("#0E141B", "#151F28", "#1B2733", "#131C26", "#2C3E50", "#ECF2F8", "#9FB3C8", "#38B2AC", "#111921") if dark_mode else ("#FAF7F2", "#F4EBE1", "#FFFFFF", "#F8F4EC", "#E6D5C3", "#2C1E16", "#6E503B", "#2B7A78", "#FFFFFF")
 
 st.markdown(f"""
+st.markdown(f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     html, body, .stApp, .stMarkdown, p, li, h1, h2, h3, h4, h5, h6, label, input, textarea, button {{ font-family: 'Inter', sans-serif; }}
@@ -439,23 +440,24 @@ st.markdown(f"""
     .ql-toolbar {{ background-color: {bg_subcard} !important; border-color: {border_col} !important; border-radius: 8px 8px 0 0 !important; }}
     .ql-container {{ border-color: {border_col} !important; border-radius: 0 0 8px 8px !important; font-family: 'Inter', sans-serif !important; font-size: 1rem !important; background-color: {input_bg} !important; }}
     .ql-editor {{ color: {text_main} !important; min-height: 350px !important; }}
-/* Đồng bộ Dark Mode cho thanh chat input và đáy trang */
-    [data-testid="stBottom"], [data-testid="stBottom"] > div {
+
+    /* Khắc phục thanh chat input nền trắng khi bật Dark Mode */
+    [data-testid="stBottom"], [data-testid="stBottom"] > div {{
         background-color: {bg_app} !important;
-    }
-    [data-testid="stChatInput"] {
+    }}
+    [data-testid="stChatInput"] {{
         background-color: {input_bg} !important;
         border: 1px solid {border_col} !important;
         border-radius: 12px !important;
-    }
-    [data-testid="stChatInput"] textarea {
+    }}
+    [data-testid="stChatInput"] textarea {{
         background-color: transparent !important;
         color: {text_main} !important;
-    }
-    [data-testid="stChatInput"] button {
+    }}
+    [data-testid="stChatInput"] button {{
         color: {accent_col} !important;
         background: transparent !important;
-    }
+    }}
 </style>
 """, unsafe_allow_html=True)
 
