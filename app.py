@@ -406,15 +406,63 @@ def compile_session_md(sess):
 
 # ==================== 6. GIAO DIỆN & CSS ====================
 dark_mode = st.session_state.settings.get("dark_mode", False)
-bg_app, bg_sidebar, card, bg_subcard, border_col, text_main, text_sub, accent_col, input_bg = ("#0E141B", "#151F28", "#1B2733", "#131C26", "#2C3E50", "#ECF2F8", "#9FB3C8", "#38B2AC", "#111921") if dark_mode else ("#FAF7F2", "#F4EBE1", "#FFFFFF", "#F8F4EC", "#E6D5C3", "#2C1E16", "#6E503B", "#2B7A78", "#FFFFFF")
+bg_app, bg_sidebar, card, bg_subcard, border_col, text_main, text_sub, accent_col, input_bg = (
+    ("#0E141B", "#151F28", "#1B2733", "#131C26", "#2C3E50", "#ECF2F8", "#9FB3C8", "#38B2AC", "#111921")
+    if dark_mode else
+    ("#FAF7F2", "#F4EBE1", "#FFFFFF", "#F8F4EC", "#E6D5C3", "#2C1E16", "#6E503B", "#2B7A78", "#FFFFFF")
+)
 
 st.markdown(f"""
 <style>
-    /* Đồng bộ màu theo chế độ Sáng/Tối cho thanh chat input */
-    [data-testid="stBottom"], [data-testid="stBottom"] > div {{
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    html, body, .stApp, .stMarkdown, p, li, h1, h2, h3, h4, h5, h6, label, input, textarea, button {{ font-family: 'Inter', sans-serif; }}
+    [data-testid="stIconMaterial"], .material-icons, span[translate="no"] {{ font-family: 'Material Symbols Rounded' !important; font-weight: normal !important; font-style: normal !important; }}
+    
+    /* Màu nền tổng thể toàn trang và phần thân chính */
+    .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
+        background-color: {bg_app} !important;
+        color: {text_main} !important;
+    }}
+    [data-testid="stSidebar"] {{
+        background-color: {bg_sidebar} !important;
+        border-right: 1px solid {border_col} !important;
+    }}
+    header[data-testid="stHeader"], [data-testid="stDecoration"] {{ display: none !important; }}
+    .block-container {{ padding-top: 1.8rem !important; }}
+    
+    /* Văn bản & Tiêu đề */
+    .stApp p, .stApp li, .stApp label, .stMarkdown {{ color: {text_main} !important; line-height: 1.76 !important; margin-bottom: 0.8rem !important; }}
+    .stMarkdown ul, .stMarkdown ol {{ margin-bottom: 1.5rem !important; }}
+    .stMarkdown li {{ margin-bottom: 0.8rem !important; }}
+    .stApp h1, .stApp h2, .stApp h3, .stApp h4 {{ color: {text_main} !important; margin-top: 1.5rem !important; margin-bottom: 0.8rem !important; }}
+    .cite-tag {{ font-size: 0.72em !important; color: {text_sub} !important; opacity: 0.82; font-weight: 500; margin-left: 4px; background: {bg_subcard}; padding: 2px 6px; border-radius: 4px; }}
+    
+    /* Hệ thống Nút bấm */
+    .stButton > button {{ background-color: transparent !important; color: {text_main} !important; border: 1px solid {border_col} !important; border-radius: 8px; font-weight: 500; }}
+    .stButton > button:hover {{ border-color: {accent_col} !important; color: {accent_col} !important; }}
+    .stButton > button[kind="primary"] {{ background-color: {accent_col} !important; color: white !important; border: none !important; }}
+    [data-testid="stSidebar"] .stButton > button {{ background: transparent !important; color: {text_main} !important; border: none !important; text-align: center !important; justify-content: center !important; display: flex !important; align-items: center !important; padding: 11px 14px !important; margin-bottom: 4px; width: 100% !important; }}
+    [data-testid="stSidebar"] .stButton > button p {{ text-align: center !important; width: 100% !important; margin: 0 !important; }}
+    [data-testid="stSidebar"] .stButton > button:hover {{ background-color: {bg_subcard} !important; border-radius: 10px; }}
+    [data-testid="stSidebar"] .stButton > button[kind="primary"] {{ background-color: {accent_col} !important; color: white !important; font-weight: 600 !important; border-radius: 10px; }}
+    [data-testid="stSidebar"] .stButton > button[kind="primary"] p {{ color: white !important; }}
+    
+    /* Ô nhập liệu & Bảng biểu */
+    .stTextInput input, .stTextArea textarea, .stSelectbox [data-baseweb="select"] > div {{ background-color: {input_bg} !important; color: {text_main} !important; border: 1px solid {border_col} !important; border-radius: 8px !important; }}
+    .stMarkdown table {{ width: 100%; border-collapse: collapse; margin: 16px 0; border: 1px solid {border_col}; }}
+    .stMarkdown th {{ background-color: {bg_subcard}; color: {text_main}; padding: 12px; border-bottom: 1px solid {border_col}; text-align: left; }}
+    .stMarkdown td {{ padding: 12px; border-bottom: 1px solid {border_col}; }}
+    [data-testid="stExpander"], [data-testid="stMetric"] {{ background-color: transparent !important; border: 1px solid {border_col} !important; border-radius: 10px !important; margin-bottom: 10px !important; }}
+    .element-container:has(> div:empty) {{ display: none !important; }}
+    .ql-toolbar {{ background-color: {bg_subcard} !important; border-color: {border_col} !important; border-radius: 8px 8px 0 0 !important; }}
+    .ql-container {{ border-color: {border_col} !important; border-radius: 0 0 8px 8px !important; font-family: 'Inter', sans-serif !important; font-size: 1rem !important; background-color: {input_bg} !important; }}
+    .ql-editor {{ color: {text_main} !important; min-height: 350px !important; }}
+
+    /* Thanh Chat Input ở dưới đáy đồng bộ hoàn toàn theo Sáng/Tối */
+    [data-testid="stBottom"], [data-testid="stBottom"] > div, [data-testid="stBottomBlockContainer"] {{
         background-color: {bg_app} !important;
     }}
-    [data-testid="stChatInput"] {{
+    [data-testid="stChatInput"], [data-testid="stChatInput"] > div {{
         background-color: {input_bg} !important;
         border: 1px solid {border_col} !important;
         border-radius: 12px !important;
@@ -422,11 +470,13 @@ st.markdown(f"""
     [data-testid="stChatInput"] textarea {{
         background-color: {input_bg} !important;
         color: {text_main} !important;
+        caret-color: {text_main} !important;
     }}
     [data-testid="stChatInput"] textarea::placeholder {{
         color: {text_sub} !important;
     }}
     [data-testid="stChatInput"] button {{
+        background-color: transparent !important;
         color: {accent_col} !important;
     }}
 </style>
