@@ -439,6 +439,23 @@ st.markdown(f"""
     .ql-toolbar {{ background-color: {bg_subcard} !important; border-color: {border_col} !important; border-radius: 8px 8px 0 0 !important; }}
     .ql-container {{ border-color: {border_col} !important; border-radius: 0 0 8px 8px !important; font-family: 'Inter', sans-serif !important; font-size: 1rem !important; background-color: {input_bg} !important; }}
     .ql-editor {{ color: {text_main} !important; min-height: 350px !important; }}
+/* Đồng bộ Dark Mode cho thanh chat input và đáy trang */
+    [data-testid="stBottom"], [data-testid="stBottom"] > div {
+        background-color: {bg_app} !important;
+    }
+    [data-testid="stChatInput"] {
+        background-color: {input_bg} !important;
+        border: 1px solid {border_col} !important;
+        border-radius: 12px !important;
+    }
+    [data-testid="stChatInput"] textarea {
+        background-color: transparent !important;
+        color: {text_main} !important;
+    }
+    [data-testid="stChatInput"] button {
+        color: {accent_col} !important;
+        background: transparent !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
