@@ -1,0 +1,8 @@
+.streamlit/
+kho_sach/
+*.bak
+*.tmp
+__pycache__/
+cat_file.py
+New Text Document.txt
+Khoi_Dong_Dudu.bat

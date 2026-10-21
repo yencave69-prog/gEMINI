@@ -1,0 +1,8 @@
+streamlit
+PyMuPDF
+google-genai
+streamlit-quill
+python-pptx
+gtts
+markdown
+gdown
