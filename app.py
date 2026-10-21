@@ -66,7 +66,7 @@ def sync_books_from_gdrive(force=False):
         
     with st.spinner("Đang tải đầy đủ kho sách gốc từ Google Drive (chỉ mất vài chục giây ở lần khởi động đầu tiên)..."):
         try:
-            gdown.download_folder(url=drive_url, output=PDF_DIR, quiet=True, use_cookies=False, remaining_ok=True)
+            gdown.download_folder(url=drive_url, output=PDF_DIR, quiet=True, use_cookies=False)
         except Exception as e:
             st.warning(f"Chưa thể tải tự động từ Google Drive. Hãy kiểm tra quyền chia sẻ 'Bất kỳ ai có liên kết': {e}")
 
