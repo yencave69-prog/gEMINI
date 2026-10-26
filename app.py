@@ -144,7 +144,7 @@ def ensure_database_ready(force_reload=False):
     # Nếu có cấu hình thư mục Google Drive chứa file PDF mới (ví dụ thct.pdf) thì đồng bộ về
     drive_folder = st.secrets.get("GDRIVE_FOLDER_URL", GDRIVE_FOLDER_URL) if hasattr(st, "secrets") else GDRIVE_FOLDER_URL
     if drive_folder and "drive.google.com" in drive_folder and (force_reload or not any(f.lower().endswith(".pdf") for f in os.listdir(PDF_DIR))):
-        with st.spinner("Đang tải sách"):
+        with st.spinner("⏳ Đang đồng bộ các file PDF mới từ thư mục Google Drive..."):
             try:
                 gdown.download_folder(url=drive_folder, output=PDF_DIR, quiet=True, use_cookies=False)
             except Exception: pass
@@ -444,7 +444,7 @@ def _get_fallback_models():
 def generate_ai_response(prompt_text):
     client = genai.Client(api_key=get_active_api_key())
     last_err = None
-    with st.spinner("Running..."):
+    with st.spinner("⏳ Đang xử lý dữ liệu với AI..."):
         for model_name in _get_fallback_models():
             for attempt in range(2):
                 try:
@@ -473,7 +473,7 @@ def stream_ai_response(prompt_text, visual_page_keys=None):
     contents.append(prompt_text)
 
     placeholder = st.empty()
-    placeholder.info("⏳ **Đang suy nghĩ... (Vui lòng chờ trong giây lát)**")
+    placeholder.info("⏳ **Đang kết nối máy chủ AI và biên soạn câu trả lời... (Vui lòng chờ trong giây lát)**")
     
     full_text = ""
     last_err = None
@@ -1149,11 +1149,11 @@ elif page == "USMLE & SRS":
         with c1: topic = st.text_input("Chủ đề Quiz (Để trống = ngẫu nhiên):")
         with c2: n_q = st.number_input("Số câu:", 1, 10, 4)
 
-        if st.button("Tạo đề trắc nghiệm", type="primary"):
+        if st.button("📝 Tạo đề trắc nghiệm", type="primary"):
             books = st.session_state.get("_books", all_books_in_db)
             if not books: st.warning("Vui lòng chọn sách ở thanh bên trái.")
             else:
-                with st.spinner("⏳ Loading..."):
+                with st.spinner("⏳ Đang thiết kế câu hỏi tình huống lâm sàng USMLE..."):
                     if not topic.strip():
                         ph_books = ",".join("?" * len(books))
                         with get_db() as conn: sample = conn.execute(f"SELECT book, page, text FROM pages WHERE book IN ({ph_books}) ORDER BY RANDOM() LIMIT 10", books).fetchall()
