@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import datetime, os, sys, subprocess, re, json, csv, io, random, time
 import sqlite3
 import zipfile
@@ -30,13 +29,10 @@ except ImportError:
     from pptx.util import Inches, Pt
 
 # ==================== 1. CẤU HÌNH TRANG & DỮ LIỆU ĐÁM MÂY ====================
-if "_sidebar_state" not in st.session_state:
-    st.session_state["_sidebar_state"] = "expanded"
-
 st.set_page_config(
     page_title="Chấn Thương Chỉnh Hình",
     layout="wide",
-    initial_sidebar_state=st.session_state["_sidebar_state"]
+    initial_sidebar_state="expanded"
 )
 
 st.markdown("""
@@ -192,7 +188,6 @@ def ensure_database_ready(force_reload=False, custom_folder_url=""):
 
     init_db_tables()
 
-    # Đồng bộ từ thư mục Google Drive nếu người dùng cung cấp link thư mục
     if folder_url and "drive.google.com" in folder_url and (force_reload or not any(f.lower().endswith(".pdf") for f in os.listdir(PDF_DIR))):
         with st.spinner("⏳ Đang tải các file sách mới (bao gồm thct) từ thư mục Google Drive..."):
             try:
@@ -621,36 +616,7 @@ def render_graphviz_if_present(text):
             try: st.graphviz_chart(d)
             except Exception: st.code(d)
 
-def force_open_sidebar():
-    """Hàm mở lại thanh công cụ bên trái bằng cả State lẫn JavaScript để đảm bảo 100% hoạt động"""
-    st.session_state["_sidebar_state"] = "expanded"
-    components.html(
-        """
-        <script>
-        try {
-            const doc = window.parent.document;
-            const selectors = [
-                '[data-testid="stSidebarCollapsedControl"] button',
-                '[data-testid="collapsedControl"] button',
-                '[data-testid="stExpandSidebarButton"]',
-                'button[aria-label*="sidebar" i]',
-                'header[data-testid="stHeader"] button'
-            ];
-            for (const sel of selectors) {
-                const btn = doc.querySelector(sel);
-                if (btn) { btn.click(); break; }
-            }
-            const sb = doc.querySelector('[data-testid="stSidebar"]');
-            if (sb && sb.getAttribute('aria-expanded') === 'false') {
-                sb.setAttribute('aria-expanded', 'true');
-            }
-        } catch (e) {}
-        </script>
-        """,
-        height=0,
-    )
-
-# ==================== 5. GIAO DIỆN, DARK MODE & NÚT MỞ SIDEBAR LUÔN HIỂN THỊ ====================
+# ==================== 5. GIAO DIỆN, DARK MODE & NÚT ĐÓNG/MỞ SIDEBAR ====================
 dark_mode = st.session_state.settings.get("dark_mode", False)
 bg_app, bg_sidebar, card, bg_subcard, border_col, text_main, text_sub, accent_col, input_bg = (
     ("#0E141B", "#151F28", "#1B2733", "#131C26", "#2C3E50", "#ECF2F8", "#9FB3C8", "#38B2AC", "#111921")
@@ -673,7 +639,7 @@ st.markdown(f"""
         border-right: 1px solid {border_col} !important;
     }}
 
-    /* SỬA LỖI 2: Hiển thị rõ ràng nút mở Sidebar ở góc trái trên cùng mọi lúc */
+    /* Giữ nút mũi tên mở Sidebar của Streamlit hiển thị rõ ràng ở góc trên bên trái khi thu gọn */
     header[data-testid="stHeader"] {{
         background: transparent !important;
         display: flex !important;
@@ -713,7 +679,7 @@ st.markdown(f"""
         color: #FFFFFF !important;
     }}
 
-    .block-container {{ padding-top: 1.5rem !important; }}
+    .block-container {{ padding-top: 1.8rem !important; }}
     
     .stApp p, .stApp li, .stApp label, .stMarkdown {{ color: {text_main} !important; line-height: 1.76 !important; margin-bottom: 0.8rem !important; }}
     .stApp h1, .stApp h2, .stApp h3, .stApp h4 {{ color: {text_main} !important; margin-top: 1.5rem !important; margin-bottom: 0.8rem !important; }}
@@ -841,30 +807,9 @@ with st.sidebar:
             st.success("Đã xóa tên sách cũ!")
             st.rerun()
 
-# ==================== 7. THANH ĐIỀU HƯỚNG NHANH & NÚT MỞ MENU KHI SIDEBAR ĐÓNG ====================
+# ==================== 7. NỘI DUNG TỪNG CHUYÊN MỤC ====================
 page = st.session_state.current_page
 
-# Thanh công cụ cố định trên đầu màn hình chính: giúp mở lại Sidebar hoặc chuyển tab ngay cả khi đã đóng Sidebar
-top_c1, top_c2 = st.columns([1.1, 4.9])
-with top_c1:
-    if st.button("☰ Mở Menu / Kệ sách", key="btn_force_open_sb", use_container_width=True):
-        force_open_sidebar()
-        st.rerun()
-with top_c2:
-    nav_options = ["Hỏi đáp", "Bảng tin", "Trực Cấp cứu", "Kho bài viết", "Tạo thẻ Anki", "X-quang", "USMLE & SRS", "Tạo Slide"]
-    quick_nav = st.selectbox(
-        "Chuyển nhanh chuyên mục:",
-        nav_options,
-        index=nav_options.index(page) if page in nav_options else 0,
-        label_visibility="collapsed",
-        key="quick_top_nav_sel"
-    )
-    if quick_nav != page:
-        save_active_sessions()
-        st.session_state.current_page = quick_nav
-        st.rerun()
-
-# ==================== 8. NỘI DUNG TỪNG CHUYÊN MỤC ====================
 if page == "Hỏi đáp":
     c_opt1, c_opt2, c_opt3 = st.columns([2.2, 1.8, 1])
     with c_opt1: ans_mode = st.radio("Chế độ:", ["Tự động", "Giải thích", "Bài soạn"], horizontal=True, key="qa_mode")
