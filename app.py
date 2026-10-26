@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import datetime, os, sys, subprocess, re, json, csv, io, random, time
 import sqlite3
 import zipfile
@@ -29,7 +30,14 @@ except ImportError:
     from pptx.util import Inches, Pt
 
 # ==================== 1. CẤU HÌNH TRANG & DỮ LIỆU ĐÁM MÂY ====================
-st.set_page_config(page_title="Chấn Thương Chỉnh Hình", layout="wide", initial_sidebar_state="expanded")
+if "_sidebar_state" not in st.session_state:
+    st.session_state["_sidebar_state"] = "expanded"
+
+st.set_page_config(
+    page_title="Chấn Thương Chỉnh Hình",
+    layout="wide",
+    initial_sidebar_state=st.session_state["_sidebar_state"]
+)
 
 st.markdown("""
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -39,7 +47,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 DRIVE_FILE_ID = "1g1FSfgKerUEFSM7K5mJnAlw2pH4u2uT2"
-GDRIVE_FOLDER_URL = ""  # Có thể dán link thư mục Google Drive vào đây hoặc trong Streamlit Secrets
+GDRIVE_FOLDER_URL = ""
 
 LIBRARY_FILE = "dudu_library.json"
 MISTAKES_FILE = "dudu_mistakes.json"
@@ -82,7 +90,7 @@ def save_json_file(filepath, data):
     os.replace(tmp, filepath)
 
 def save_active_sessions():
-    """Lưu bền vững phiên Hỏi đáp, Bảng tin, Cấp cứu xuống đĩa để chuyển tab hoặc bấm Lưu không bao giờ mất bài (Lỗi 4 & 5)"""
+    """Lưu bền vững phiên Hỏi đáp, Bảng tin, Cấp cứu xuống đĩa để chuyển tab hoặc bấm Lưu không bao giờ mất bài"""
     data = {
         "qa_session": st.session_state.get("qa_session"),
         "news_session": st.session_state.get("news_session"),
@@ -127,30 +135,7 @@ def save_api_key_everywhere(new_key: str):
         with open(SECRETS_PATH, "w", encoding="utf-8") as f: f.write(f'GEMINI_API_KEY = "{clean_k}"\n')
     except Exception: pass
 
-# ==================== 2. CƠ SỞ DỮ LIỆU SQLITE FTS5 & QUẢN LÝ SÁCH (SỬA LỖI 1) ====================
-def ensure_database_ready(force_reload=False):
-    if force_reload and os.path.exists(DB_FILE):
-        try: os.remove(DB_FILE)
-        except Exception: pass
-
-    if not os.path.exists(DB_FILE) or os.path.getsize(DB_FILE) < 100000:
-        with st.spinner("⏳ Đang tải cơ sở dữ liệu sách từ Google Drive về Cloud..."):
-            try:
-                file_id = st.secrets.get("DRIVE_FILE_ID", DRIVE_FILE_ID) if hasattr(st, "secrets") else DRIVE_FILE_ID
-                gdown.download(id=file_id, output=DB_FILE, quiet=False)
-            except Exception as e:
-                st.error(f"Lỗi tải file từ Google Drive: {e}")
-
-    # Nếu có cấu hình thư mục Google Drive chứa file PDF mới (ví dụ thct.pdf) thì đồng bộ về
-    drive_folder = st.secrets.get("GDRIVE_FOLDER_URL", GDRIVE_FOLDER_URL) if hasattr(st, "secrets") else GDRIVE_FOLDER_URL
-    if drive_folder and "drive.google.com" in drive_folder and (force_reload or not any(f.lower().endswith(".pdf") for f in os.listdir(PDF_DIR))):
-        with st.spinner("⏳ Đang đồng bộ các file PDF mới từ thư mục Google Drive..."):
-            try:
-                gdown.download_folder(url=drive_folder, output=PDF_DIR, quiet=True, use_cookies=False)
-            except Exception: pass
-
-ensure_database_ready(force_reload=False)
-
+# ==================== 2. CƠ SỞ DỮ LIỆU SQLITE FTS5 & ĐỒNG BỘ SÁCH MỚI ====================
 def get_db():
     conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -162,8 +147,6 @@ def init_db_tables():
         conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS pages USING fts5(book, page UNINDEXED, text, tokenize='unicode61 remove_diacritics 2')")
         conn.execute("CREATE TABLE IF NOT EXISTS books (name TEXT PRIMARY KEY, pages INTEGER, indexed_at TEXT)")
         conn.commit()
-
-init_db_tables()
 
 def is_book_indexed(fname):
     with get_db() as conn:
@@ -178,20 +161,64 @@ def index_single_book_fast(fname):
         rows = [(fname, idx + 1, doc.load_page(idx).get_text("text")) for idx in range(len(doc))]
         doc.close()
         with get_db() as conn:
+            conn.execute("DELETE FROM pages WHERE book=?", (fname,))
             conn.executemany("INSERT INTO pages(book, page, text) VALUES (?,?,?)", rows)
             conn.execute("INSERT OR REPLACE INTO books(name, pages, indexed_at) VALUES (?,?,?)", (fname, len(rows), datetime.datetime.now().isoformat()))
             conn.commit()
         return True
     except Exception: return False
 
-# Tự động nạp các file PDF mới (ví dụ thct.pdf) nếu có trong thư mục kho_sach
+def ensure_database_ready(force_reload=False, custom_folder_url=""):
+    saved_cfg = load_json_file(SETTINGS_FILE, {})
+    folder_url = custom_folder_url.strip() or saved_cfg.get("gdrive_folder_url", "").strip()
+    if not folder_url and hasattr(st, "secrets"):
+        try: folder_url = st.secrets.get("GDRIVE_FOLDER_URL", "").strip()
+        except Exception: pass
+    if not folder_url:
+        folder_url = GDRIVE_FOLDER_URL.strip()
+
+    if force_reload:
+        if os.path.exists(DB_FILE):
+            try: os.remove(DB_FILE)
+            except Exception: pass
+
+    if not os.path.exists(DB_FILE) or os.path.getsize(DB_FILE) < 100000:
+        with st.spinner("⏳ Đang tải cơ sở dữ liệu sách từ Google Drive về Cloud..."):
+            try:
+                file_id = st.secrets.get("DRIVE_FILE_ID", DRIVE_FILE_ID) if hasattr(st, "secrets") else DRIVE_FILE_ID
+                gdown.download(id=file_id, output=DB_FILE, quiet=False, fuzzy=True)
+            except Exception as e:
+                st.warning(f"Lưu ý khi tải file DB: {e}")
+
+    init_db_tables()
+
+    # Đồng bộ từ thư mục Google Drive nếu người dùng cung cấp link thư mục
+    if folder_url and "drive.google.com" in folder_url and (force_reload or not any(f.lower().endswith(".pdf") for f in os.listdir(PDF_DIR))):
+        with st.spinner("⏳ Đang tải các file sách mới (bao gồm thct) từ thư mục Google Drive..."):
+            try:
+                gdown.download_folder(url=folder_url, output=PDF_DIR, quiet=True, use_cookies=False)
+                new_pdfs = sorted([f for f in os.listdir(PDF_DIR) if f.lower().endswith(".pdf")])
+                if new_pdfs:
+                    with get_db() as conn:
+                        db_books = [r[0] for r in conn.execute("SELECT DISTINCT book FROM pages").fetchall()]
+                        for old_b in db_books:
+                            if old_b not in new_pdfs:
+                                conn.execute("DELETE FROM pages WHERE book=?", (old_b,))
+                                conn.execute("DELETE FROM books WHERE name=?", (old_b,))
+                        conn.commit()
+                    for pdf_f in new_pdfs:
+                        index_single_book_fast(pdf_f)
+            except Exception as e:
+                st.warning(f"Không thể tải tự động thư mục Drive: {e}")
+
+ensure_database_ready(force_reload=False)
+
 local_pdf_files = sorted([f for f in os.listdir(PDF_DIR) if f.lower().endswith(".pdf")])
 for pdf_f in local_pdf_files:
     if not is_book_indexed(pdf_f):
         index_single_book_fast(pdf_f)
 
 def remove_books_from_db(book_names_to_delete):
-    """Xóa triệt để các tên sách cũ bị trùng khỏi cơ sở dữ liệu FTS5"""
     if not book_names_to_delete: return
     with get_db() as conn:
         for bname in book_names_to_delete:
@@ -200,12 +227,10 @@ def remove_books_from_db(book_names_to_delete):
         conn.commit()
 
 def deduplicate_legacy_books_auto():
-    """Tự động phát hiện các bản ghi sách có tên cũ dài bị trùng với tên mới ngắn gọn và loại bỏ tên cũ"""
     with get_db() as conn:
         rows = conn.execute("SELECT DISTINCT book FROM pages").fetchall()
     raw_books = sorted([r[0] for r in rows]) if rows else []
 
-    # Danh sách các tên file cũ dài ngoằng đã được người dùng đổi sang tên mới ngắn gọn (như trong Hình 1)
     known_old_duplicates = [
         "Dutton_s Orthopaedic-Examination, Evaluation and Intervention 4e.pdf",
         "Rockwood and Green_s Fractures in Adults 8e.pdf",
@@ -214,7 +239,6 @@ def deduplicate_legacy_books_auto():
     to_auto_remove = []
     for old_b in known_old_duplicates:
         if old_b in raw_books:
-            # Nếu trong DB đã có bản tên mới tương ứng thì tự động xóa bản tên cũ
             if ("Dutton" in old_b and "Dutton.pdf" in raw_books) or \
                ("Rockwood" in old_b and "Rockwood and Green.pdf" in raw_books) or \
                ("downloadsachyhoc" in old_b and ("chitren.pdf" in raw_books or len(raw_books) > 5)):
@@ -224,7 +248,6 @@ def deduplicate_legacy_books_auto():
         remove_books_from_db(to_auto_remove)
         raw_books = [b for b in raw_books if b not in to_auto_remove]
 
-    # Loại bỏ thêm các sách nằm trong danh sách ẩn của người dùng (nếu có)
     saved_settings = load_json_file(SETTINGS_FILE, {})
     hidden_books = set(saved_settings.get("hidden_books", []))
     return [b for b in raw_books if b not in hidden_books]
@@ -232,7 +255,6 @@ def deduplicate_legacy_books_auto():
 all_books_in_db = deduplicate_legacy_books_auto()
 
 def get_thct_emergency_books(all_books, selected_books):
-    """Tìm cuốn sách có tên 'thct' để ưu tiên dùng cho mục Trực Cấp Cứu (Sửa lỗi 3)"""
     thct_matches = [b for b in all_books if "thct" in b.lower()]
     if thct_matches:
         return thct_matches
@@ -293,13 +315,13 @@ def get_page_image(fpath, page_index, zoom=1.4):
         return img_bytes
     except Exception: return None
 
-# ==================== 3. KHỞI TẠO STATE BỀN VỮNG (KHÔNG BỊ MẤT KHI ĐỔI TAB) ====================
+# ==================== 3. KHỞI TẠO STATE BỀN VỮNG ====================
 _saved_active = load_json_file(ACTIVE_SESSIONS_FILE, {})
 
 _defaults = {
     "library": lambda: repair_items_id(load_json_file(LIBRARY_FILE, []), LIBRARY_FILE),
     "mistakes": lambda: repair_items_id(load_json_file(MISTAKES_FILE, []), MISTAKES_FILE),
-    "settings": lambda: load_json_file(SETTINGS_FILE, {"dark_mode": False, "api_key": "", "hidden_books": []}),
+    "settings": lambda: load_json_file(SETTINGS_FILE, {"dark_mode": False, "api_key": "", "hidden_books": [], "gdrive_folder_url": ""}),
     "progress": lambda: load_json_file(PROGRESS_FILE, {"activity": {}, "quizzes": 0, "correct": 0}),
     "er_chat": lambda: _saved_active.get("er_chat", []),
     "er_case_active": lambda: _saved_active.get("er_case_active", False),
@@ -336,7 +358,6 @@ def clean_cite_spans_for_storage(text: str):
     return re.sub(r'<span\s+class=["\']cite-tag["\']>(.*?)</span>', r'\1', text or "")
 
 def save_to_library(item_type, title, content, tags=None):
-    """Lưu bài viết vào Kho và đồng bộ từ đĩa trước để không bao giờ bị ghi đè hay mất bài (Sửa lỗi 4)"""
     disk_lib = load_json_file(LIBRARY_FILE, [])
     existing_ids = {str(x.get("id")) for x in st.session_state.library}
     for d_item in disk_lib:
@@ -371,7 +392,6 @@ def update_library_item(item_id, new_title, new_content, tags=None):
             found = True
             break
     if not found:
-        # Nếu bài viết chưa có trong danh sách thì tạo mới để không bị mất
         return save_to_library("Hỏi Đáp", new_title, clean_content, tags=tags)
     save_json_file(LIBRARY_FILE, st.session_state.library)
     save_active_sessions()
@@ -601,7 +621,36 @@ def render_graphviz_if_present(text):
             try: st.graphviz_chart(d)
             except Exception: st.code(d)
 
-# ==================== 5. GIAO DIỆN, DARK MODE & SỬA LỖI NÚT ĐÓNG/MỞ SIDEBAR (LỖI 2) ====================
+def force_open_sidebar():
+    """Hàm mở lại thanh công cụ bên trái bằng cả State lẫn JavaScript để đảm bảo 100% hoạt động"""
+    st.session_state["_sidebar_state"] = "expanded"
+    components.html(
+        """
+        <script>
+        try {
+            const doc = window.parent.document;
+            const selectors = [
+                '[data-testid="stSidebarCollapsedControl"] button',
+                '[data-testid="collapsedControl"] button',
+                '[data-testid="stExpandSidebarButton"]',
+                'button[aria-label*="sidebar" i]',
+                'header[data-testid="stHeader"] button'
+            ];
+            for (const sel of selectors) {
+                const btn = doc.querySelector(sel);
+                if (btn) { btn.click(); break; }
+            }
+            const sb = doc.querySelector('[data-testid="stSidebar"]');
+            if (sb && sb.getAttribute('aria-expanded') === 'false') {
+                sb.setAttribute('aria-expanded', 'true');
+            }
+        } catch (e) {}
+        </script>
+        """,
+        height=0,
+    )
+
+# ==================== 5. GIAO DIỆN, DARK MODE & NÚT MỞ SIDEBAR LUÔN HIỂN THỊ ====================
 dark_mode = st.session_state.settings.get("dark_mode", False)
 bg_app, bg_sidebar, card, bg_subcard, border_col, text_main, text_sub, accent_col, input_bg = (
     ("#0E141B", "#151F28", "#1B2733", "#131C26", "#2C3E50", "#ECF2F8", "#9FB3C8", "#38B2AC", "#111921")
@@ -615,7 +664,6 @@ st.markdown(f"""
     html, body, .stApp, .stMarkdown, p, li, h1, h2, h3, h4, h5, h6, label, input, textarea, button {{ font-family: 'Inter', sans-serif; }}
     [data-testid="stIconMaterial"], .material-icons, span[translate="no"] {{ font-family: 'Material Symbols Rounded' !important; font-weight: normal !important; font-style: normal !important; }}
     
-    /* Đồng bộ nền tổng thể toàn trang và phần thân chính */
     .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
         background-color: {bg_app} !important;
         color: {text_main} !important;
@@ -625,26 +673,38 @@ st.markdown(f"""
         border-right: 1px solid {border_col} !important;
     }}
 
-    /* SỬA LỖI 2: Giữ thanh Header trong suốt để KHÔNG làm mất nút mở lại Sidebar khi thu gọn */
+    /* SỬA LỖI 2: Hiển thị rõ ràng nút mở Sidebar ở góc trái trên cùng mọi lúc */
     header[data-testid="stHeader"] {{
         background: transparent !important;
+        display: flex !important;
+        visibility: visible !important;
         height: 3.2rem !important;
     }}
-    [data-testid="stDecoration"], [data-testid="stToolbar"] {{
+    [data-testid="stDecoration"], [data-testid="stStatusWidget"], .stAppDeployButton {{
         display: none !important;
     }}
-    /* Làm nổi bật nút mở và đóng Sidebar (mũi tên > và <) để dễ bấm trên iPad/Mobile */
     [data-testid="stSidebarCollapsedControl"],
     [data-testid="collapsedControl"],
-    button[kind="header"],
+    [data-testid="stExpandSidebarButton"] {{
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        position: fixed !important;
+        top: 10px !important;
+        left: 12px !important;
+        z-index: 999999 !important;
+        background-color: {accent_col} !important;
+        border-radius: 8px !important;
+        padding: 4px 8px !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.35) !important;
+    }}
+    [data-testid="stSidebarCollapsedControl"] button,
+    [data-testid="collapsedControl"] button,
     [data-testid="stSidebarHeader"] button {{
         background-color: {accent_col} !important;
         color: #FFFFFF !important;
+        border: none !important;
         border-radius: 8px !important;
-        padding: 4px !important;
-        opacity: 1 !important;
-        visibility: visible !important;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.25) !important;
     }}
     [data-testid="stSidebarCollapsedControl"] svg,
     [data-testid="collapsedControl"] svg,
@@ -653,14 +713,12 @@ st.markdown(f"""
         color: #FFFFFF !important;
     }}
 
-    .block-container {{ padding-top: 2.2rem !important; }}
+    .block-container {{ padding-top: 1.5rem !important; }}
     
-    /* Văn bản và trích dẫn */
     .stApp p, .stApp li, .stApp label, .stMarkdown {{ color: {text_main} !important; line-height: 1.76 !important; margin-bottom: 0.8rem !important; }}
     .stApp h1, .stApp h2, .stApp h3, .stApp h4 {{ color: {text_main} !important; margin-top: 1.5rem !important; margin-bottom: 0.8rem !important; }}
     .cite-tag {{ font-size: 0.72em !important; color: {text_sub} !important; opacity: 0.82; font-weight: 500; margin-left: 4px; background: {bg_subcard}; padding: 2px 6px; border-radius: 4px; }}
     
-    /* Nút bấm */
     .stButton > button {{ background-color: transparent !important; color: {text_main} !important; border: 1px solid {border_col} !important; border-radius: 8px; font-weight: 500; }}
     .stButton > button:hover {{ border-color: {accent_col} !important; color: {accent_col} !important; }}
     .stButton > button[kind="primary"] {{ background-color: {accent_col} !important; color: white !important; border: none !important; }}
@@ -670,7 +728,6 @@ st.markdown(f"""
     [data-testid="stSidebar"] .stButton > button[kind="primary"] {{ background-color: {accent_col} !important; color: white !important; font-weight: 600 !important; border-radius: 10px; }}
     [data-testid="stSidebar"] .stButton > button[kind="primary"] p {{ color: white !important; }}
     
-    /* Ô nhập liệu & Bảng */
     .stTextInput input, .stTextArea textarea, .stSelectbox [data-baseweb="select"] > div {{ background-color: {input_bg} !important; color: {text_main} !important; border: 1px solid {border_col} !important; border-radius: 8px !important; }}
     .stTextArea textarea:disabled {{ color: {text_main} !important; opacity: 0.92 !important; -webkit-text-fill-color: {text_main} !important; }}
     .stMarkdown table {{ width: 100%; border-collapse: collapse; margin: 16px 0; border: 1px solid {border_col}; }}
@@ -679,13 +736,11 @@ st.markdown(f"""
     [data-testid="stExpander"], [data-testid="stMetric"] {{ background-color: transparent !important; border: 1px solid {border_col} !important; border-radius: 10px !important; margin-bottom: 10px !important; }}
     .element-container:has(> div:empty) {{ display: none !important; }}
 
-    /* Trình soạn thảo Word (Quill Editor) */
     .ql-toolbar {{ background-color: #F8FAFC !important; border: 1px solid {border_col} !important; border-radius: 10px 10px 0 0 !important; padding: 8px !important; }}
     .ql-container {{ border: 1px solid {border_col} !important; border-radius: 0 0 10px 10px !important; font-family: 'Inter', sans-serif !important; font-size: 1.02rem !important; background-color: {input_bg} !important; }}
     .ql-editor {{ color: {text_main} !important; min-height: 400px !important; line-height: 1.75 !important; }}
     .ql-editor img, .stMarkdown img {{ max-width: 100% !important; height: auto !important; border-radius: 8px !important; margin: 12px 0 !important; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }}
 
-    /* Thanh Chat Input ở dưới đáy đồng bộ hoàn toàn theo Sáng/Tối */
     [data-testid="stBottom"], [data-testid="stBottom"] > div, [data-testid="stBottomBlockContainer"] {{
         background-color: {bg_app} !important;
     }}
@@ -746,9 +801,37 @@ with st.sidebar:
     else: st.error("Chưa nạp được dữ liệu sách từ Drive.")
     st.session_state["_books"] = selected_local_books
 
-    # Công cụ xử lý Lỗi 1: Xóa tên sách cũ bị lặp hoặc tải lại kho sách mới từ Drive
-    with st.expander("🛠️ Quản lý & Làm sạch Kệ sách", expanded=False):
-        books_to_del = st.multiselect("Chọn tên sách cũ bị trùng cần xóa:", all_books_in_db, key="del_old_books_sel")
+    with st.expander("🛠️ Quản lý & Đồng bộ sách mới (thct)", expanded=False):
+        st.caption("1️⃣ **Thêm nhanh sách `thct.pdf` hoặc sách mới:**")
+        uploaded_pdfs = st.file_uploader("Chọn file PDF từ máy (ví dụ thct.pdf):", type=["pdf"], accept_multiple_files=True, key="up_new_pdfs")
+        if uploaded_pdfs:
+            if st.button("📥 Nạp sách PDF vừa chọn vào Kệ sách", type="primary", use_container_width=True):
+                with st.spinner("⏳ Đang đọc và lập chỉ mục sách mới..."):
+                    for uf in uploaded_pdfs:
+                        save_path = os.path.join(PDF_DIR, uf.name)
+                        with open(save_path, "wb") as out_f:
+                            out_f.write(uf.read())
+                        with get_db() as conn:
+                            conn.execute("DELETE FROM books WHERE name=?", (uf.name,))
+                            conn.commit()
+                        index_single_book_fast(uf.name)
+                st.success("✅ Đã thêm sách mới thành công!")
+                st.rerun()
+
+        st.markdown("---")
+        st.caption("2️⃣ **Đồng bộ từ link thư mục Google Drive:**")
+        cur_folder = st.session_state.settings.get("gdrive_folder_url", "")
+        folder_in = st.text_input("Link thư mục Drive:", value=cur_folder, placeholder="https://drive.google.com/drive/folders/...")
+        if st.button("🔄 Đồng bộ thư mục Drive & Làm mới Kệ sách", use_container_width=True):
+            st.session_state.settings["gdrive_folder_url"] = folder_in.strip()
+            st.session_state.settings["hidden_books"] = []
+            save_json_file(SETTINGS_FILE, st.session_state.settings)
+            ensure_database_ready(force_reload=True, custom_folder_url=folder_in.strip())
+            st.rerun()
+
+        st.markdown("---")
+        st.caption("3️⃣ **Xóa tên sách cũ bị trùng:**")
+        books_to_del = st.multiselect("Chọn sách cũ muốn xóa:", all_books_in_db, key="del_old_books_sel")
         if st.button("🧹 Xóa các tên sách đã chọn", use_container_width=True) and books_to_del:
             remove_books_from_db(books_to_del)
             hidden_list = set(st.session_state.settings.get("hidden_books", []))
@@ -758,15 +841,30 @@ with st.sidebar:
             st.success("Đã xóa tên sách cũ!")
             st.rerun()
 
-        if st.button("🔄 Tải lại kho sách mới từ Drive", use_container_width=True):
-            st.session_state.settings["hidden_books"] = []
-            save_json_file(SETTINGS_FILE, st.session_state.settings)
-            ensure_database_ready(force_reload=True)
-            st.rerun()
-
-# ==================== 7. NỘI DUNG TỪNG CHUYÊN MỤC ====================
+# ==================== 7. THANH ĐIỀU HƯỚNG NHANH & NÚT MỞ MENU KHI SIDEBAR ĐÓNG ====================
 page = st.session_state.current_page
 
+# Thanh công cụ cố định trên đầu màn hình chính: giúp mở lại Sidebar hoặc chuyển tab ngay cả khi đã đóng Sidebar
+top_c1, top_c2 = st.columns([1.1, 4.9])
+with top_c1:
+    if st.button("☰ Mở Menu / Kệ sách", key="btn_force_open_sb", use_container_width=True):
+        force_open_sidebar()
+        st.rerun()
+with top_c2:
+    nav_options = ["Hỏi đáp", "Bảng tin", "Trực Cấp cứu", "Kho bài viết", "Tạo thẻ Anki", "X-quang", "USMLE & SRS", "Tạo Slide"]
+    quick_nav = st.selectbox(
+        "Chuyển nhanh chuyên mục:",
+        nav_options,
+        index=nav_options.index(page) if page in nav_options else 0,
+        label_visibility="collapsed",
+        key="quick_top_nav_sel"
+    )
+    if quick_nav != page:
+        save_active_sessions()
+        st.session_state.current_page = quick_nav
+        st.rerun()
+
+# ==================== 8. NỘI DUNG TỪNG CHUYÊN MỤC ====================
 if page == "Hỏi đáp":
     c_opt1, c_opt2, c_opt3 = st.columns([2.2, 1.8, 1])
     with c_opt1: ans_mode = st.radio("Chế độ:", ["Tự động", "Giải thích", "Bài soạn"], horizontal=True, key="qa_mode")
@@ -836,7 +934,6 @@ Cuối bài kèm sơ đồ ```dot ... ```.
             disc_list = sess.get("discussions", [])
             appendix_str = "\n\n---\n" + "".join([f"\n> Phụ lục ({d['time']}): {d['user_text']}\n{d['ai_reply']}" for d in disc_list]) if disc_list else ""
             full_save_body = sess["main_answer"] + appendix_str
-            # Kiểm tra xem saved_id có thực sự tồn tại trong Kho bài viết không
             saved_exists = any(str(it.get("id")) == str(sess.get("saved_id")) for it in st.session_state.library)
             if not sess.get("saved_id") or not saved_exists:
                 if st.button("💾 Lưu vào Kho bài viết", key="qa_save", type="primary", use_container_width=True):
@@ -1002,13 +1099,20 @@ elif page == "Kho bài viết":
                     if show_img: display_cited_pages(clean_view, key_prefix=f"lib_{iid}_{idx}")
 
 elif page == "Trực Cấp cứu":
-    # SỬA LỖI 3: Tự động nhận diện và lấy sách 'thct' làm tài liệu chuẩn cho các tình huống cấp cứu
     er_books = get_thct_emergency_books(all_books_in_db, st.session_state.get("_books", all_books_in_db))
     thct_detected = [b for b in all_books_in_db if "thct" in b.lower()]
     if thct_detected:
-        st.caption(f"📚 **Nguồn dữ liệu cấp cứu đang kích hoạt:** `{', '.join(thct_detected)}`")
+        st.success(f"📚 **Nguồn sách cấp cứu đang kích hoạt:** `{', '.join(thct_detected)}`")
     else:
-        st.caption("📚 **Nguồn dữ liệu cấp cứu:** Đang lấy từ kệ sách hiện tại (Nếu bạn mới thêm file `thct.pdf` lên Drive, hãy bấm *'🔄 Tải lại kho sách mới từ Drive'* ở dưới cùng cột bên trái).")
+        with st.expander("⚠️ Chưa thấy file sách 'thct' trong Kệ sách — Bấm vào đây để nạp nhanh file thct.pdf", expanded=True):
+            er_up = st.file_uploader("Chọn file thct.pdf từ máy tính/iPad của bạn:", type=["pdf"], key="er_direct_upload")
+            if er_up and st.button("📥 Nạp ngay sách thct vào hệ thống", type="primary"):
+                with st.spinner("⏳ Đang nạp sách cấp cứu thct..."):
+                    sp = os.path.join(PDF_DIR, er_up.name)
+                    with open(sp, "wb") as f_out: f_out.write(er_up.read())
+                    index_single_book_fast(er_up.name)
+                st.success("✅ Đã nạp xong sách thct!")
+                st.rerun()
 
     topic = st.text_input("Chủ đề ca bệnh (bỏ trống để bốc thăm ngẫu nhiên từ sách thct):", key="er_topic_in")
     c1, c2 = st.columns(2)
