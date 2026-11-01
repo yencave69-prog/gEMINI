@@ -41,9 +41,12 @@ st.markdown("""
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 """, unsafe_allow_html=True)
 
-# ---> THAY MÃ ID FILE ortho_fts5.db MỚI CỦA BẠN VÀO DÒNG DƯỚI ĐÂY <---
-DRIVE_FILE_ID = "1g1FSfgKerUEFSM7K5mJnAlw2pH4u2uT2"
-GDRIVE_FOLDER_URL = ""
+# ĐÃ GẮN SẴN LINK THƯ MỤC KHO SÁCH GOOGLE DRIVE MỚI CẬP NHẬT CỦA BẠN
+DEFAULT_GDRIVE_FOLDER = (
+    "https://drive.google.com/drive/folders/"
+    "1tVqwvCq0u7aUrnLQx3XbWG4ezmy0Oto-"
+    "?usp=sharing"
+)
 
 LIBRARY_FILE = "dudu_library.json"
 MISTAKES_FILE = "dudu_mistakes.json"
@@ -89,6 +92,7 @@ def save_json_file(filepath, data):
         pass
 
 def save_active_sessions():
+    """Lưu gọn nhẹ các phiên đang mở xuống đĩa để chuyển tab hoặc bấm Lưu không bao giờ mất bài"""
     qa_s = st.session_state.get("qa_session")
     qa_light = None
     if qa_s:
@@ -140,7 +144,7 @@ def get_active_api_key():
         sk = st.secrets.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
         if sk and sk != "AQ.xxx": return sk
     except Exception: pass
-    return "AQ.Ab8RN6IVfc-wewsRumOJ-eZF0Y0bedH16oIhp_o4KNHNbK05Cg"
+    return ""
 
 def save_api_key_everywhere(new_key: str):
     clean_k = new_key.strip().strip('"').strip("'")
@@ -151,7 +155,7 @@ def save_api_key_everywhere(new_key: str):
         with open(SECRETS_PATH, "w", encoding="utf-8") as f: f.write(f'GEMINI_API_KEY = "{clean_k}"\n')
     except Exception: pass
 
-# ==================== 2. CƠ SỞ DỮ LIỆU SQLITE FTS5 SIÊU NHẸ ====================
+# ==================== 2. CƠ SỞ DỮ LIỆU SQLITE FTS5 & ĐỒNG BỘ DRIVE ====================
 def get_db():
     conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -164,6 +168,8 @@ def init_db_tables():
         conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS pages USING fts5(book, page UNINDEXED, text, tokenize='unicode61 remove_diacritics 2')")
         conn.execute("CREATE TABLE IF NOT EXISTS books (name TEXT PRIMARY KEY, pages INTEGER, indexed_at TEXT)")
         conn.commit()
+
+init_db_tables()
 
 def is_book_indexed(fname):
     with get_db() as conn:
@@ -187,22 +193,80 @@ def index_single_book_fast(fname):
         return True
     except Exception: return False
 
-@st.cache_resource(show_spinner=False)
-def init_and_verify_database():
-    if not os.path.exists(DB_FILE) or os.path.getsize(DB_FILE) < 100000:
-        try:
-            file_id = st.secrets.get("DRIVE_FILE_ID", DRIVE_FILE_ID) if hasattr(st, "secrets") else DRIVE_FILE_ID
-            gdown.download(id=file_id, output=DB_FILE, quiet=True, fuzzy=True)
-        except Exception:
-            pass
-    init_db_tables()
-    local_pdfs = sorted([f for f in os.listdir(PDF_DIR) if f.lower().endswith(".pdf")])
-    for pdf_f in local_pdfs:
-        if not is_book_indexed(pdf_f):
-            index_single_book_fast(pdf_f)
-    return True
+def check_db_has_books():
+    if not os.path.exists(DB_FILE) or os.path.getsize(DB_FILE) < 50000:
+        return False
+    try:
+        with get_db() as conn:
+            cnt = conn.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
+            return cnt > 0
+    except Exception:
+        return False
 
-init_and_verify_database()
+def sync_from_gdrive_folder(force_clean=False):
+    """Tải trực tiếp toàn bộ kho sách từ thư mục Google Drive mới cập nhật và lập chỉ mục FTS5"""
+    folder_url = DEFAULT_GDRIVE_FOLDER
+    if hasattr(st, "secrets"):
+        try:
+            sec_url = st.secrets.get("GDRIVE_FOLDER_URL", "").strip()
+            if sec_url: folder_url = sec_url
+        except Exception: pass
+
+    if force_clean:
+        # Xóa DB cũ để làm sạch toàn bộ tên sách cũ bị lặp
+        for ext in ["", "-wal", "-shm"]:
+            p = DB_FILE + ext
+            if os.path.exists(p):
+                try: os.remove(p)
+                except Exception: pass
+        init_db_tables()
+
+    local_pdfs = [f for f in os.listdir(PDF_DIR) if f.lower().endswith(".pdf")]
+    if force_clean or (not local_pdfs and not check_db_has_books()):
+        with st.spinner("⏳ Đang tải kho sách mới cập nhật từ Google Drive về máy chủ (chỉ mất khoảng 30-60 giây ở lần đầu)..."):
+            try:
+                gdown.download_folder(url=folder_url, output=PDF_DIR, quiet=True, use_cookies=False)
+            except Exception as e:
+                st.warning(f"Lưu ý khi kết nối Google Drive: {e}")
+
+    init_db_tables()
+
+    # Nếu trong thư mục kho_sach có các file PDF nằm trong thư mục con do gdown tạo ra thì di chuyển ra ngoài PDF_DIR
+    for root_dir, _, files in os.walk(PDF_DIR):
+        if os.path.abspath(root_dir) != os.path.abspath(PDF_DIR):
+            for f in files:
+                if f.lower().endswith((".pdf", ".db")):
+                    src_p = os.path.join(root_dir, f)
+                    dst_p = os.path.join(PDF_DIR, f)
+                    if not os.path.exists(dst_p):
+                        try: os.replace(src_p, dst_p)
+                        except Exception: pass
+
+    # Đồng bộ và lập chỉ mục các file PDF hiện có trong kho_sach
+    current_pdfs = sorted([f for f in os.listdir(PDF_DIR) if f.lower().endswith(".pdf")])
+    if current_pdfs:
+        # Dọn sạch những tên sách cũ trong DB không còn nằm trong thư mục Drive mới
+        with get_db() as conn:
+            db_books = [r[0] for r in conn.execute("SELECT DISTINCT book FROM pages").fetchall()]
+            for old_b in db_books:
+                if old_b not in current_pdfs:
+                    conn.execute("DELETE FROM pages WHERE book=?", (old_b,))
+                    conn.execute("DELETE FROM books WHERE name=?", (old_b,))
+            conn.commit()
+
+        unindexed = [b for b in current_pdfs if not is_book_indexed(b)]
+        if unindexed:
+            pb = st.progress(0, text="⏳ Đang lập chỉ mục tìm kiếm cho kho sách mới...")
+            for idx_u, b_name in enumerate(unindexed):
+                pb.progress((idx_u) / len(unindexed), text=f"📖 Đang nạp sách ({idx_u+1}/{len(unindexed)}): {b_name}")
+                index_single_book_fast(b_name)
+            pb.empty()
+            gc.collect()
+
+# Tự động kiểm tra và đồng bộ ở lần khởi chạy đầu tiên
+if "_initial_sync_done" not in st.session_state:
+    sync_from_gdrive_folder(force_clean=False)
+    st.session_state["_initial_sync_done"] = True
 
 def remove_books_from_db(book_names_to_delete):
     if not book_names_to_delete: return
@@ -213,7 +277,7 @@ def remove_books_from_db(book_names_to_delete):
         conn.commit()
     get_cached_book_list.clear()
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_cached_book_list():
     with get_db() as conn:
         rows = conn.execute("SELECT name FROM books ORDER BY name").fetchall()
@@ -318,7 +382,7 @@ _saved_active = load_json_file(ACTIVE_SESSIONS_FILE, {})
 _defaults = {
     "library": lambda: repair_items_id(load_json_file(LIBRARY_FILE, []), LIBRARY_FILE),
     "mistakes": lambda: repair_items_id(load_json_file(MISTAKES_FILE, []), MISTAKES_FILE),
-    "settings": lambda: load_json_file(SETTINGS_FILE, {"dark_mode": False, "api_key": "", "hidden_books": [], "gdrive_folder_url": ""}),
+    "settings": lambda: load_json_file(SETTINGS_FILE, {"dark_mode": False, "api_key": "", "hidden_books": []}),
     "progress": lambda: load_json_file(PROGRESS_FILE, {"activity": {}, "quizzes": 0, "correct": 0}),
     "er_chat": lambda: _saved_active.get("er_chat", []),
     "er_case_active": lambda: _saved_active.get("er_case_active", False),
@@ -458,7 +522,11 @@ def _get_fallback_models():
     return [m for m in candidates if not (m in seen or seen.add(m))]
 
 def generate_ai_response(prompt_text):
-    client = genai.Client(api_key=get_active_api_key())
+    k = get_active_api_key()
+    if not k:
+        st.error("⚠️ Bạn chưa nhập GEMINI_API_KEY. Hãy mở mục 'Cập nhật API Key' ở cột bên trái.")
+        st.stop()
+    client = genai.Client(api_key=k)
     last_err = None
     with st.spinner("⏳ Đang xử lý dữ liệu với AI..."):
         for model_name in _get_fallback_models():
@@ -480,7 +548,11 @@ def generate_ai_response(prompt_text):
     st.stop()
 
 def stream_ai_response(prompt_text, visual_page_keys=None):
-    client = genai.Client(api_key=get_active_api_key())
+    k = get_active_api_key()
+    if not k:
+        st.error("⚠️ Bạn chưa nhập GEMINI_API_KEY. Hãy mở mục 'Cập nhật API Key' ở cột bên trái.")
+        st.stop()
+    client = genai.Client(api_key=k)
     contents = []
     if visual_page_keys:
         for (fname, p_num) in visual_page_keys[:2]:
@@ -869,7 +941,7 @@ with st.sidebar:
     selected_m = st.selectbox("Mô hình AI", avail_models, index=cur_idx, label_visibility="collapsed")
     if selected_m != st.session_state.selected_model: st.session_state.selected_model = selected_m; st.rerun()
 
-    with st.expander("Cập nhật API Key", expanded=False):
+    with st.expander("Cập nhật API Key", expanded=not key_ok):
         if not key_ok: st.caption("Khóa API lỗi 401 hoặc chưa nhập. Dán khóa API mới vào dưới đây:")
         new_key_in = st.text_input("GEMINI_API_KEY:", value="", type="password", placeholder="Dán API Key mới...")
         if st.button("Lưu API Key", use_container_width=True) and new_key_in.strip():
@@ -886,18 +958,26 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown(f"<p style='text-align:center;font-weight:700;color:{text_sub};margin-bottom:8px;'>KỆ SÁCH ({len(all_books_in_db)})</p>", unsafe_allow_html=True)
+    if st.button("🔄 Đồng bộ lại kho sách từ Google Drive", use_container_width=True):
+        st.session_state.settings["hidden_books"] = []
+        save_json_file(SETTINGS_FILE, st.session_state.settings)
+        sync_from_gdrive_folder(force_clean=True)
+        get_cached_book_list.clear()
+        st.rerun()
+
     selected_local_books = []
     if all_books_in_db:
         for b_i, name in enumerate(all_books_in_db):
             if st.checkbox(name, value=True, key=f"book_{b_i}"): selected_local_books.append(name)
-    else: st.error("Chưa nạp được dữ liệu sách từ Drive.")
+    else:
+        st.warning("Chưa thấy sách trong DB. Hãy bấm nút '🔄 Đồng bộ lại kho sách từ Google Drive' ngay phía trên!")
     st.session_state["_books"] = selected_local_books
 
-    with st.expander("🛠️ Quản lý & Thêm sách mới (thct)", expanded=False):
-        st.caption("1️⃣ **Thêm nhanh sách `thct.pdf` hoặc sách mới:**")
-        uploaded_pdfs = st.file_uploader("Chọn file PDF từ máy (ví dụ thct.pdf):", type=["pdf"], accept_multiple_files=True, key="up_new_pdfs")
+    with st.expander("🛠️ Quản lý & Thêm sách mới", expanded=False):
+        st.caption("1️⃣ **Tải trực tiếp file PDF từ máy/iPad lên Kệ sách:**")
+        uploaded_pdfs = st.file_uploader("Chọn file PDF:", type=["pdf"], accept_multiple_files=True, key="up_new_pdfs")
         if uploaded_pdfs:
-            if st.button("📥 Nạp sách PDF vừa chọn vào Kệ sách", type="primary", use_container_width=True):
+            if st.button("📥 Nạp sách PDF vừa chọn", type="primary", use_container_width=True):
                 with st.spinner("⏳ Đang đọc và lập chỉ mục sách mới..."):
                     for uf in uploaded_pdfs:
                         save_path = os.path.join(PDF_DIR, uf.name)
@@ -913,7 +993,7 @@ with st.sidebar:
 
         st.markdown("---")
         st.caption("2️⃣ **Xóa tên sách cũ bị trùng:**")
-        books_to_del = st.multiselect("Chọn sách cũ muốn xóa:", all_books_in_db, key="del_old_books_sel")
+        books_to_del = st.multiselect("Chọn sách muốn xóa:", all_books_in_db, key="del_old_books_sel")
         if st.button("🧹 Xóa các tên sách đã chọn", use_container_width=True) and books_to_del:
             remove_books_from_db(books_to_del)
             hidden_list = set(st.session_state.settings.get("hidden_books", []))
@@ -1177,16 +1257,7 @@ elif page == "Trực Cấp cứu":
     if thct_detected:
         st.success(f"📚 **Nguồn sách cấp cứu đang kích hoạt:** `{', '.join(thct_detected)}`")
     else:
-        with st.expander("⚠️ Chưa thấy file sách 'thct' trong Kệ sách — Bấm vào đây để nạp nhanh file thct.pdf", expanded=True):
-            er_up = st.file_uploader("Chọn file thct.pdf từ máy tính/iPad của bạn:", type=["pdf"], key="er_direct_upload")
-            if er_up and st.button("📥 Nạp ngay sách thct vào hệ thống", type="primary"):
-                with st.spinner("⏳ Đang nạp sách cấp cứu thct..."):
-                    sp = os.path.join(PDF_DIR, er_up.name)
-                    with open(sp, "wb") as f_out: f_out.write(er_up.read())
-                    index_single_book_fast(er_up.name)
-                get_cached_book_list.clear()
-                st.success("✅ Đã nạp xong sách thct!")
-                st.rerun()
+        st.info("💡 Đang sử dụng các sách hiện có trong Kệ sách. Nếu bạn mới thêm sách `thct` vào Drive, hãy bấm nút **'🔄 Đồng bộ lại kho sách từ Google Drive'** ở cột bên trái.")
 
     topic = st.text_input("Chủ đề ca bệnh (bỏ trống để bốc thăm ngẫu nhiên từ sách thct):", key="er_topic_in")
     c1, c2 = st.columns(2)
