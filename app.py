@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import datetime, os, sys, subprocess, re, json, csv, io, random, time, gc
 import sqlite3
 from collections import Counter
@@ -41,7 +42,6 @@ st.markdown("""
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 """, unsafe_allow_html=True)
 
-# ĐÃ GẮN SẴN LINK THƯ MỤC KHO SÁCH GOOGLE DRIVE MỚI CẬP NHẬT CỦA BẠN
 DEFAULT_GDRIVE_FOLDER = (
     "https://drive.google.com/drive/folders/"
     "1tVqwvCq0u7aUrnLQx3XbWG4ezmy0Oto-"
@@ -204,7 +204,6 @@ def check_db_has_books():
         return False
 
 def sync_from_gdrive_folder(force_clean=False):
-    """Tải trực tiếp toàn bộ kho sách từ thư mục Google Drive mới cập nhật và lập chỉ mục FTS5"""
     folder_url = DEFAULT_GDRIVE_FOLDER
     if hasattr(st, "secrets"):
         try:
@@ -213,7 +212,6 @@ def sync_from_gdrive_folder(force_clean=False):
         except Exception: pass
 
     if force_clean:
-        # Xóa DB cũ để làm sạch toàn bộ tên sách cũ bị lặp
         for ext in ["", "-wal", "-shm"]:
             p = DB_FILE + ext
             if os.path.exists(p):
@@ -231,7 +229,6 @@ def sync_from_gdrive_folder(force_clean=False):
 
     init_db_tables()
 
-    # Nếu trong thư mục kho_sach có các file PDF nằm trong thư mục con do gdown tạo ra thì di chuyển ra ngoài PDF_DIR
     for root_dir, _, files in os.walk(PDF_DIR):
         if os.path.abspath(root_dir) != os.path.abspath(PDF_DIR):
             for f in files:
@@ -242,10 +239,8 @@ def sync_from_gdrive_folder(force_clean=False):
                         try: os.replace(src_p, dst_p)
                         except Exception: pass
 
-    # Đồng bộ và lập chỉ mục các file PDF hiện có trong kho_sach
     current_pdfs = sorted([f for f in os.listdir(PDF_DIR) if f.lower().endswith(".pdf")])
     if current_pdfs:
-        # Dọn sạch những tên sách cũ trong DB không còn nằm trong thư mục Drive mới
         with get_db() as conn:
             db_books = [r[0] for r in conn.execute("SELECT DISTINCT book FROM pages").fetchall()]
             for old_b in db_books:
@@ -263,7 +258,6 @@ def sync_from_gdrive_folder(force_clean=False):
             pb.empty()
             gc.collect()
 
-# Tự động kiểm tra và đồng bộ ở lần khởi chạy đầu tiên
 if "_initial_sync_done" not in st.session_state:
     sync_from_gdrive_folder(force_clean=False)
     st.session_state["_initial_sync_done"] = True
@@ -502,7 +496,7 @@ def create_pptx_bytes(topic_title, raw_slide_text):
     buf = io.BytesIO(); prs.save(buf); buf.seek(0)
     return buf.getvalue()
 
-# ==================== 4. AI ENGINE & CÂU HỎI ÔN TẬP CUỐI BÀI ====================
+# ==================== 4. AI ENGINE & CẤU TRÚC BÀI SOẠN CÓ MỤC HẬU PHẪU ====================
 @st.cache_data(ttl=3600, show_spinner=False)
 def scan_available_models(active_key: str):
     fallback = ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-pro-latest"]
@@ -639,18 +633,40 @@ def translate_to_vietnamese_cached(raw_text: str):
 
 PEDAGOGICAL_STYLE_RULES = """
 NGUYÊN TẮC TRÌNH BÀY BẮT BUỘC ĐỂ TRÁNH KHỐI CHỮ DÀY ĐẶC:
-1. KHÔNG VIẾT ĐOẠN VĂN DÀI HAY GỘP NHIỀU Ý VÀO NHAU. Mọi nội dung lâm sàng, X-quang, MRI, Điều trị phải được phân tách rõ ràng.
+1. KHÔNG VIẾT ĐOẠN VĂN DÀI HAY GỘP NHIỀU Ý VÀO NHAU. Mọi nội dung lâm sàng, X-quang, MRI, Điều trị, Hậu phẫu phải được phân tách rõ ràng.
 2. CẤU TRÚC PHÂN TẦNG VÀ TIÊU ĐỀ BẮT BUỘC PHẢI IN HOA + TÔ ĐẬM:
-   - Các tiêu đề lớn phải dùng `1.`, `2.`, `3.` kèm IN HOA VÀ TÔ ĐẬM. (Ví dụ: **1. ĐẠI CƯƠNG VÀ CƠ CHẾ**, **2. ĐIỀU TRỊ BẢO TỒN VÀ PHẪU THUẬT**).
+   - Các tiêu đề lớn phải dùng `1.`, `2.`, `3.` kèm IN HOA VÀ TÔ ĐẬM. (Ví dụ: **1. ĐẠI CƯƠNG VÀ CƠ CHẾ**, **5. NGUYÊN TẮC & PHÁC ĐỒ ĐIỀU TRỊ**, **6. THEO DÕI HẬU PHẪU, BIẾN CHỨNG & DẶN DÒ BỆNH NHÂN**).
    - Dưới mỗi tiêu đề lớn, mọi phương pháp hay nguyên tắc bắt buộc phải xuống dòng và dùng Gạch đầu dòng (`-`).
    - Mở đầu mỗi gạch đầu dòng, từ khóa phải TÔ ĐẬM.
 3. Trong mỗi gạch đầu dòng (`-`), diễn giải dài và sâu (5-8 câu), cung cấp đầy đủ các số liệu định lượng (độ, mm, tuần lễ) và cơ chế giải phẫu/sinh lý bệnh kèm [Trang X].
 4. Lập **Bảng (Markdown Table)** khi cần so sánh. Cuối mỗi phần quan trọng đóng khung blockquote (`>`) đúc kết mẹo lâm sàng.
 5. BẮT BUỘC Ở CUỐI MỖI BÀI VIẾT: Phải có mục **🎯 CÂU HỎI TỰ LƯỢNG GIÁ & ÔN TẬP (ACTIVE RECALL)** gồm đúng 3 câu hỏi tư duy lâm sàng/cơ chế cốt lõi giúp người đọc tự kiểm tra lại kiến thức vừa đọc. Sử dụng đúng định dạng sau cho mỗi câu hỏi:
 ===ON_TAP===
-Câu hỏi: [Nội dung câu hỏi suy luận ngắn gọn, xoáy sâu vào cơ chế/chỉ định/bẫy lâm sàng]
+Câu hỏi: [Nội dung câu hỏi suy luận ngắn gọn, xoáy sâu vào cơ chế/chỉ định/hậu phẫu/bẫy lâm sàng]
 Đáp án: [Giải thích đáp án súc tích, chuẩn xác kèm số liệu/mốc giải phẫu]
 ===HET_ON_TAP===
+"""
+
+ARTICLE_8_PART_TEMPLATE = """
+TRÌNH BÀY BÀI SOẠN 8 PHẦN CHUẨN LÂM SÀNG (CÁC TIÊU ĐỀ LỚN PHẢI IN HOA VÀ TÔ ĐẬM):
+**1. TỔNG QUAN, ĐỊNH NGHĨA & GIẢI PHẪU - SINH CƠ HỌC**
+**2. PHÂN LOẠI TỔN THƯƠNG & Ý NGHĨA LÂM SÀNG (KÈM BẢNG MARKDOWN)**
+**3. TRIỆU CHỨNG LÂM SÀNG & CƠ CHẾ HÌNH THÀNH DẤU HIỆU**
+**4. CẬN LÂM SÀNG**
+   - **X-quang:** (Tư thế chụp, các góc đo định lượng, dấu hiệu tổn thương...)
+   - **CT-Scan / Siêu âm / MRI:** (Chỉ định và giá trị chẩn đoán...)
+**5. NGUYÊN TẮC & PHÁC ĐỒ ĐIỀU TRỊ**
+   - **Nguyên tắc tối thượng:**...
+   - **Điều trị bảo tồn:** (Chỉ định, phương pháp bó bột/nẹp, thời gian bất động...)
+   - **Điều trị phẫu thuật:** (Chỉ định tuyệt đối/tương đối, phương pháp kết hợp xương, đường mổ và cấu trúc giải phẫu nguy cơ...)
+**6. THEO DÕI HẬU PHẪU, BIẾN CHỨNG & DẶN DÒ BỆNH NHÂN (BẮT BUỘC CHI TIẾT)**
+   - **Khám và theo dõi hậu phẫu tại bệnh phòng:** (Khám toàn trạng, theo dõi dịch dẫn lưu/vết mổ, đặc biệt khám kỹ mạch máu - thần kinh chi mổ: vận động đặc hiệu từng dây thần kinh, cảm giác nông, mạch ngoại vi, Capillary refill, tầm soát hội chứng chèn ép khoang sau mổ...)
+   - **Đánh giá X-quang kiểm tra sau mổ:** (Các tiêu chuẩn đạt yêu cầu về trục giải phẫu, độ phục hồi mặt khớp, vị trí đinh/nẹp vít...)
+   - **Các biến chứng hậu phẫu sớm & muộn cần cảnh giác:** (Nhiễm trùng vết mổ/viêm xương, liệt thần kinh do phẫu thuật, huyết khối tĩnh mạch sâu DVT, cứng khớp, lỏng/gãy dụng cụ kết hợp xương, chậm liền xương/khớp giả, can lệch, hoại tử vô mạch...)
+   - **Lưu ý chăm sóc & Dặn dò bệnh nhân khi xuất viện:** (Cách thay băng/chăm sóc vết mổ hoặc bột tại nhà, tư thế kê cao chi giảm phù nề, chế độ dinh dưỡng, các dấu hiệu cảnh báo đỏ — Red Flags như sốt, đau tăng dữ dội, tê bì đầu chi, chảy dịch hôi — cần tái khám cấp cứu ngay, và lịch hẹn tái khám/cắt chỉ/chụp X-quang kiểm tra...)
+**7. PHỤC HỒI CHỨC NĂNG & TẬP VẬN ĐỘNG THEO GIAI ĐOẠN**
+**8. TIÊN LƯỢNG LÂM SÀNG**
+Cuối bài kèm sơ đồ ```dot ... ``` và 3 câu hỏi ôn tập trong cặp thẻ ===ON_TAP=== ... ===HET_ON_TAP===.
 """
 
 def format_small_citations(text: str):
@@ -750,7 +766,7 @@ def render_end_of_article_quiz_widget(topic_title, article_content, session_dict
             q_prompt = f"""Dựa trực tiếp vào nội dung bài học dưới đây về chủ đề "{topic_title}":
 {article_content[:18000]}
 
-Hãy thiết kế đúng 3 câu hỏi trắc nghiệm lâm sàng (mức độ USMLE / Bác sĩ Nội trú CTCH) kiểm tra các điểm cốt lõi nhất (cơ chế, chỉ định, góc đo, biến chứng) trong bài vừa đọc.
+Hãy thiết kế đúng 3 câu hỏi trắc nghiệm lâm sàng (mức độ USMLE / Bác sĩ Nội trú CTCH) kiểm tra các điểm cốt lõi nhất (cơ chế, chỉ định, khám hậu phẫu, biến chứng) trong bài vừa đọc.
 ĐỊNH DẠNG BẮT BUỘC CHO MỖI CÂU:
 ===CAU_HOI===
 [Tình huống hoặc câu hỏi lượng giá]
@@ -814,6 +830,103 @@ D. [...]
                 save_active_sessions()
                 log_activity()
                 st.rerun()
+
+def inject_sticky_toolbar_and_highlighter_js(pen_color_hex: str):
+    """
+    Nâng cấp 1 & 2:
+    - Ghim thanh công cụ (.ql-toolbar) trượt theo khi kéo bài viết xuống.
+    - Cho phép bấm chọn bút Highlight trước rồi bôi đen văn bản tới đâu tự động tô màu tới đó.
+    """
+    components.html(
+        f"""
+        <script>
+        (function() {{
+            const penColor = "{pen_color_hex}";
+            const parentDoc = window.parent.document;
+
+            function enhanceQuillIframes() {{
+                const iframes = parentDoc.querySelectorAll('iframe');
+                iframes.forEach((ifr) => {{
+                    try {{
+                        const idoc = ifr.contentDocument || ifr.contentWindow.document;
+                        if (!idoc) return;
+                        const toolbar = idoc.querySelector('.ql-toolbar');
+                        const container = idoc.querySelector('.ql-container');
+                        const editor = idoc.querySelector('.ql-editor');
+                        if (!toolbar || !editor) return;
+
+                        // 1. Tạo thanh công cụ trượt theo (Sticky Toolbar) + Khung cuộn mượt mà
+                        if (!idoc.getElementById('dudu-sticky-quill-style')) {{
+                            const st = idoc.createElement('style');
+                            st.id = 'dudu-sticky-quill-style';
+                            st.innerHTML = `
+                                .ql-toolbar {{
+                                    position: sticky !important;
+                                    top: 0 !important;
+                                    z-index: 99999 !important;
+                                    background: #F8FAFC !important;
+                                    box-shadow: 0 2px 8px rgba(0,0,0,0.12) !important;
+                                    border-bottom: 2px solid #CBD5E1 !important;
+                                }}
+                                .ql-container {{
+                                    max-height: 68vh !important;
+                                    overflow-y: auto !important;
+                                }}
+                                .ql-editor {{
+                                    min-height: 420px !important;
+                                    padding-bottom: 60px !important;
+                                }}
+                                .ql-editor.pen-active {{
+                                    cursor: text !important;
+                                }}
+                            `;
+                            idoc.head.appendChild(st);
+                        }}
+
+                        // 2. Cập nhật màu bút Highlight đang chọn (bôi tới đâu tô màu tới đó)
+                        idoc._duduPenColor = penColor;
+                        if (penColor !== "OFF") {{
+                            editor.classList.add('pen-active');
+                        }} else {{
+                            editor.classList.remove('pen-active');
+                        }}
+
+                        if (!editor._duduHighlighterBound) {{
+                            editor._duduHighlighterBound = true;
+                            const applyMarker = () => {{
+                                const activeColor = idoc._duduPenColor;
+                                if (!activeColor || activeColor === "OFF") return;
+                                setTimeout(() => {{
+                                    try {{
+                                        const sel = idoc.getSelection();
+                                        if (!sel || sel.isCollapsed || sel.toString().trim().length === 0) return;
+                                        idoc.execCommand('styleWithCSS', false, true);
+                                        if (activeColor === "ERASE") {{
+                                            idoc.execCommand('hiliteColor', false, 'transparent');
+                                            idoc.execCommand('backColor', false, 'transparent');
+                                        }} else {{
+                                            idoc.execCommand('hiliteColor', false, activeColor);
+                                        }}
+                                        // Kích hoạt sự kiện input để Quill lưu ngay trạng thái mới về Streamlit
+                                        editor.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                    }} catch (err) {{}}
+                                }}, 40);
+                            }};
+                            editor.addEventListener('mouseup', applyMarker);
+                            editor.addEventListener('touchend', applyMarker);
+                        }}
+                    }} catch (e) {{}}
+                }});
+            }}
+
+            enhanceQuillIframes();
+            setTimeout(enhanceQuillIframes, 350);
+            setTimeout(enhanceQuillIframes, 900);
+        }})();
+        </script>
+        """,
+        height=0,
+    )
 
 # ==================== 5. GIAO DIỆN, DARK MODE & NÚT ĐÓNG/MỞ SIDEBAR ====================
 dark_mode = st.session_state.settings.get("dark_mode", False)
@@ -900,8 +1013,26 @@ st.markdown(f"""
     [data-testid="stExpander"], [data-testid="stMetric"] {{ background-color: transparent !important; border: 1px solid {border_col} !important; border-radius: 10px !important; margin-bottom: 10px !important; }}
     .element-container:has(> div:empty) {{ display: none !important; }}
 
-    .ql-toolbar {{ background-color: #F8FAFC !important; border: 1px solid {border_col} !important; border-radius: 10px 10px 0 0 !important; padding: 8px !important; }}
-    .ql-container {{ border: 1px solid {border_col} !important; border-radius: 0 0 10px 10px !important; font-family: 'Inter', sans-serif !important; font-size: 1.02rem !important; background-color: {input_bg} !important; }}
+    /* Ghim thanh công cụ Quill trượt theo bài viết khi cuộn */
+    .ql-toolbar {{
+        position: sticky !important;
+        top: 0 !important;
+        z-index: 9999 !important;
+        background-color: #F8FAFC !important;
+        border: 1px solid {border_col} !important;
+        border-radius: 10px 10px 0 0 !important;
+        padding: 8px !important;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.08) !important;
+    }}
+    .ql-container {{
+        border: 1px solid {border_col} !important;
+        border-radius: 0 0 10px 10px !important;
+        font-family: 'Inter', sans-serif !important;
+        font-size: 1.02rem !important;
+        background-color: {input_bg} !important;
+        max-height: 68vh !important;
+        overflow-y: auto !important;
+    }}
     .ql-editor {{ color: {text_main} !important; min-height: 400px !important; line-height: 1.75 !important; }}
     .ql-editor img, .stMarkdown img {{ max-width: 100% !important; height: auto !important; border-radius: 8px !important; margin: 12px 0 !important; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }}
 
@@ -1026,30 +1157,21 @@ if page == "Hỏi đáp":
                 ctx, matched, vis = smart_route_pages(query, books, max_pages=12)
                 q_low = query.lower()
                 is_specific = any(k in q_low for k in ["tại sao", "vì sao", "như thế nào", "khi nào", "bao lâu", "chỉ định", "biến chứng", "cơ chế", "là gì", "so sánh", "?"]) or len(q_low.split()) >= 6
-                use_7 = (ans_mode == "Bài soạn") or (ans_mode == "Tự động" and not is_specific)
+                use_8 = (ans_mode == "Bài soạn") or (ans_mode == "Tự động" and not is_specific)
 
-                if not use_7:
+                if not use_8:
                     prompt = f"""TÀI LIỆU GIÁO TRÌNH:\n{ctx}\n\nCÂU HỎI: "{query}"\n\n{PEDAGOGICAL_STYLE_RULES}
 TRÌNH BÀY DẠNG LIST CHO TỪNG Ý LỚN DƯỚI ĐÂY (TIÊU ĐỀ LỚN PHẢI IN HOA VÀ TÔ ĐẬM):
 **1. TRẢ LỜI TRỰC DIỆN & BẢN CHẤT CƠ CHẾ:**
-**2. PHÂN TÍCH LÂM SÀNG & CẬN LÂM SÀNG:** (Dùng gạch đầu dòng riêng cho X-quang, Siêu âm... kèm `[Trang X]`)
-**3. LƯU Ý LÂM SÀNG & RED FLAGS:**
+**2. PHÂN TÍCH LÂM SÀNG, CẬN LÂM SÀNG & XỬ TRÍ:** (Dùng gạch đầu dòng riêng kèm `[Trang X]`)
+**3. THEO DÕI HẬU PHẪU, BIẾN CHỨNG & DẶN DÒ BỆNH NHÂN:** (Khám gì sau mổ, biến chứng cần canh chừng, lưu ý và dặn dò bệnh nhân khi xuất viện)
 **4. MẸO GHI NHỚ LÂU:** (Đặt trong blockquote `>`)
 **5. SƠ ĐỒ THUẬT TOÁN** ```dot ... ```
 **6. 3 CÂU HỎI TỰ LƯỢNG GIÁ CUỐI BÀI** (Đặt trong cặp thẻ ===ON_TAP=== ... ===HET_ON_TAP===)
 """
                 else:
-                    prompt = f"""TÀI LIỆU GIÁO TRÌNH:\n{ctx}\n\nCHỦ ĐỀ: "{query}"\n\n{PEDAGOGICAL_STYLE_RULES}
-TRÌNH BÀY BÀI SOẠN 7 PHẦN (CÁC TIÊU ĐỀ LỚN PHẢI IN HOA VÀ TÔ ĐẬM):
-**1. TỔNG QUAN, ĐỊNH NGHĨA & GIẢI PHẪU - SINH CƠ HỌC**
-**2. PHÂN LOẠI TỔN THƯƠNG & Ý NGHĨA LÂM SÀNG (KÈM BẢNG MARKDOWN)**
-**3. TRIỆU CHỨNG LÂM SÀNG & CƠ CHẾ HÌNH THÀNH DẤU HIỆU**
-**4. CẬN LÂM SÀNG** (- **X-quang:**... \n - **Siêu âm:**... \n - **MRI:**...)
-**5. NGUYÊN TẮC & PHÁC ĐỒ ĐIỀU TRỊ** (- **Nguyên tắc tối thượng:**... \n - **Điều trị bảo tồn:**... \n - **Chỉ định phẫu thuật:**...)
-**6. PHỤC HỒI CHỨC NĂNG & CHĂM SÓC SAU MỔ**
-**7. TIÊN LƯỢNG, PHÒNG NGỪA & XỬ TRÍ BIẾN CHỨNG**
-Cuối bài kèm sơ đồ ```dot ... ``` và 3 câu hỏi ôn tập trong cặp thẻ ===ON_TAP=== ... ===HET_ON_TAP===.
-"""
+                    prompt = f"""TÀI LIỆU GIÁO TRÌNH:\n{ctx}\n\nCHỦ ĐỀ: "{query}"\n\n{PEDAGOGICAL_STYLE_RULES}\n{ARTICLE_8_PART_TEMPLATE}"""
+
                 ans_main = stream_ai_response(prompt, vis if use_vision else None)
                 st.session_state.qa_session = {
                     "query": query,
@@ -1104,7 +1226,7 @@ Cuối bài kèm sơ đồ ```dot ... ``` và 3 câu hỏi ôn tập trong cặp
                 with st.spinner("⏳ Đang xử lý yêu cầu bổ sung... (Vui lòng chờ)"):
                     extra_ctx, _, ex_vis = smart_route_pages(sess["query"] + " " + follow_q, st.session_state.get("_books", []), max_pages=10)
                     if "chỉnh sửa" in mode.lower():
-                        sess["main_answer"] = stream_ai_response(f"TÀI LIỆU:\n{extra_ctx[:18000]}\nCHỦ ĐỀ: {sess['query']}\nBÀI CŨ: {sess['main_answer']}\nYÊU CẦU SỬA: {follow_q}\n{PEDAGOGICAL_STYLE_RULES}\nViết lại toàn bài chi tiết kèm [Trang X].", ex_vis if use_vision else None)
+                        sess["main_answer"] = stream_ai_response(f"TÀI LIỆU:\n{extra_ctx[:18000]}\nCHỦ ĐỀ: {sess['query']}\nBÀI CŨ: {sess['main_answer']}\nYÊU CẦU SỬA: {follow_q}\n{PEDAGOGICAL_STYLE_RULES}\n{ARTICLE_8_PART_TEMPLATE}\nViết lại toàn bài chi tiết kèm [Trang X].", ex_vis if use_vision else None)
                     else:
                         ans_f = stream_ai_response(f"CHỦ ĐỀ GỐC: {sess['query']}\nTÀI LIỆU:\n{extra_ctx[:16000]}\nBÀI TRƯỚC:\n{sess['main_answer'][:4000]}\nYÊU CẦU: {follow_q}\n{PEDAGOGICAL_STYLE_RULES}\nGiải thích sâu sắc kèm [Trang X].", ex_vis if use_vision else None)
                         sess["discussions"].append({"type": "feedback", "user_text": follow_q, "ai_reply": ans_f, "time": datetime.datetime.now().strftime("%H:%M")})
@@ -1156,9 +1278,9 @@ elif page == "Bảng tin":
             st.rerun()
         st.markdown(f"## {ns['query']}")
         if not ns["main_answer"]:
-            with st.spinner("⏳ Đang biên soạn bài chuyên đề từ giáo trình... (Vui lòng chờ)"):
+            with st.spinner("⏳ Đang biên soạn bài chuyên đề 8 phần (kèm mục Hậu phẫu & Dặn dò)..."):
                 ctx, mp, _ = smart_route_pages(ns["query"], st.session_state.get("_books", all_books_in_db), max_pages=12)
-                ans_news = stream_ai_response(f"TÀI LIỆU:\n{ctx}\n{PEDAGOGICAL_STYLE_RULES}\nViết bài 7 phần dạng list chia mục rõ ràng, CÁC TIÊU ĐỀ LỚN PHẢI IN HOA VÀ TÔ ĐẬM về '{ns['query']}' kèm [Trang X], sơ đồ ```dot ... ``` và 3 câu hỏi ôn tập cuối bài trong cặp thẻ ===ON_TAP=== ... ===HET_ON_TAP===.")
+                ans_news = stream_ai_response(f"TÀI LIỆU:\n{ctx}\n{PEDAGOGICAL_STYLE_RULES}\nCHỦ ĐỀ: '{ns['query']}'\n{ARTICLE_8_PART_TEMPLATE}")
                 ns.update({"matched_pages": mp, "main_answer": ans_news})
                 save_active_sessions()
                 gc.collect()
@@ -1214,10 +1336,26 @@ elif page == "Kho bài viết":
                     if st.button("🗑️ Xóa", key=f"d_{iid}_{idx}", use_container_width=True): delete_from_library(iid); st.rerun()
 
                 if is_edit:
-                    st.caption("💡 **Hướng dẫn:** Bôi đen chữ để **In đậm (B)**, **Tô màu Highlight** (biểu tượng chữ A có nền màu). Để **chèn hình ngay tại vị trí con trỏ**, hãy đặt con trỏ chuột vào dòng muốn chèn rồi bấm vào **biểu tượng Bức tranh (Image)** trên thanh công cụ.")
                     new_t = st.text_input("Tiêu đề bài viết:", value=title, key=f"et_{iid}_{idx}")
                     new_tags = st.text_input("Tags (phân cách bằng dấu phẩy):", value=", ".join(tags), key=f"etg_{iid}_{idx}")
-                    
+
+                    # NÂNG CẤP 2: Chế độ cầm Bút Dạ Quang (Bấm chọn bút trước -> Quét chuột tới đâu tự động tô màu tới đó)
+                    pen_options = {
+                        "🚫 Tắt bút (Gõ chữ thường)": "OFF",
+                        "🟨 Bút Vàng": "#FFF59D",
+                        "🟩 Bút Xanh lá": "#C8E6C9",
+                        "🟦 Bút Xanh dương": "#BBDEFB",
+                        "🩷 Bút Hồng": "#F8BBD0",
+                        "🧹 Cục tẩy (Xóa màu tô)": "ERASE"
+                    }
+                    selected_pen_label = st.radio(
+                        "🖍️ **Chế độ Bút Highlight nhanh** (Chọn màu bút rồi dùng chuột bôi đen đoạn chữ để tự động tô màu ngay):",
+                        list(pen_options.keys()),
+                        horizontal=True,
+                        key=f"pen_mode_{iid}_{idx}"
+                    )
+                    active_pen_hex = pen_options[selected_pen_label]
+
                     try:
                         import markdown
                         clean_raw = clean_cite_spans_for_storage(content)
@@ -1230,7 +1368,10 @@ elif page == "Kho bài viết":
                             toolbar=WORD_LIKE_TOOLBAR,
                             key=f"quill_{iid}_{idx}"
                         )
-                        if st.button("💾 Lưu thay đổi bài viết", key=f"sv_{iid}_{idx}", type="primary"):
+                        # Kích hoạt Sticky Toolbar trượt theo bài viết + Bút Highlight tự động
+                        inject_sticky_toolbar_and_highlighter_js(active_pen_hex)
+
+                        if st.button("💾 Lưu thay đổi bài viết", key=f"sv_{iid}_{idx}", type="primary", use_container_width=True):
                             saved_body = new_c_html if (new_c_html and len(new_c_html.strip()) > 0) else html_content
                             update_library_item(iid, new_t, saved_body, tags=[t.strip() for t in new_tags.split(",") if t.strip()])
                             st.rerun()
@@ -1303,7 +1444,7 @@ elif page == "Trực Cấp cứu":
                         f"DIỄN BIẾN:\n{history_log}\n"
                         f"{PEDAGOGICAL_STYLE_RULES}\n"
                         "1. Chấm điểm (thang 100), giải thích chi tiết đúng/sai theo sát phác đồ sách thct kèm [Trang X] bằng dạng list rõ ràng, in hoa tiêu đề.\n"
-                        "2. Chuyển bước tiếp theo (Bước 1->2 cung cấp X-quang/CLS; Bước 2->3 hỏi kế hoạch phẫu thuật/bảo tồn & PHCN; xong Bước 3 tổng kết + sơ đồ ```dot``` + 3 câu hỏi ôn tập ===ON_TAP===)."
+                        "2. Chuyển bước tiếp theo (Bước 1->2 cung cấp X-quang/CLS; Bước 2->3 hỏi kế hoạch phẫu thuật/bảo tồn, theo dõi hậu phẫu & PHCN; xong Bước 3 tổng kết + sơ đồ ```dot``` + 3 câu hỏi ôn tập ===ON_TAP===)."
                     )
                     reply_er = stream_ai_response(er_prompt)
             st.session_state.er_chat.append({"role": "assistant", "content": reply_er})
@@ -1325,7 +1466,7 @@ elif page == "Tạo thẻ Anki":
     if topic:
         with st.spinner("⏳ Đang biên soạn 10 thẻ Flashcard Anki... (Vui lòng chờ)"):
             ctx, _, _ = smart_route_pages(topic, st.session_state.get("_books", all_books_in_db), max_pages=12)
-            raw_anki = stream_ai_response(f"Tạo 10 Flashcard (Hỏi - Đáp giải thích sâu cơ chế giải phẫu/sinh cơ học dạng gạch đầu dòng kèm [Trang X]) về: {topic}.\nPhần 1: Hiển thị đọc trên web.\nPhần 2: Đặt trong khối ```csv\nMặt trước ; Mặt sau\n``` để import vào Anki.\nNguồn:\n{ctx}")
+            raw_anki = stream_ai_response(f"Tạo 10 Flashcard (Hỏi - Đáp giải thích sâu cơ chế giải phẫu/sinh cơ học/theo dõi hậu phẫu dạng gạch đầu dòng kèm [Trang X]) về: {topic}.\nPhần 1: Hiển thị đọc trên web.\nPhần 2: Đặt trong khối ```csv\nMặt trước ; Mặt sau\n``` để import vào Anki.\nNguồn:\n{ctx}")
             csv_m = re.search(r'```csv\n(.*?)\n```', raw_anki, re.DOTALL)
             st.session_state.anki_session = {"topic": topic, "display": re.sub(r'```csv\n.*?\n```', '', raw_anki, flags=re.DOTALL), "csv": csv_m.group(1) if csv_m else None}
             save_active_sessions()
@@ -1357,7 +1498,7 @@ elif page == "X-quang":
                     part = types.Part.from_bytes(data=img_bytes, mime_type="image/png")
                     if "Đố vui" in mode: p = f"Chọn 5 mốc giải phẫu/dụng cụ trên hình ({note}), đặt 5 câu hỏi nhận diện gạch đầu dòng. Đặt đáp án chi tiết sau dòng '--- ĐÁP ÁN ---'."
                     elif "Đường mổ" in mode: p = f"Phân tích chi tiết đường mổ trên hình ({note}): liệt kê từng lớp giải phẫu, khoảng gian thần kinh và cấu trúc mạch máu/thần kinh nguy cơ cao bằng gạch đầu dòng."
-                    else: p = f"Đọc phim X-quang/giải thích hình ảnh ({note}) thật chi tiết: gạch đầu dòng mô tả tổn thương, cơ chế di lệch, các góc đo giải phẫu và hướng xử trí."
+                    else: p = f"Đọc phim X-quang/giải thích hình ảnh ({note}) thật chi tiết: gạch đầu dòng mô tả tổn thương, cơ chế di lệch, các góc đo giải phẫu, hướng xử trí và lưu ý theo dõi hậu phẫu."
                     res = generate_ai_response([part, p])
                     st.session_state.xray_session = {"title": note or mode[:35], "content": res.text}; log_activity()
 
@@ -1466,7 +1607,7 @@ elif page == "Tạo Slide":
     if topic:
         with st.spinner("⏳ Đang thiết kế cấu trúc 8 Slide thuyết trình và xuất file PowerPoint..."):
             ctx, _, _ = smart_route_pages(topic, st.session_state.get("_books", all_books_in_db), max_pages=12)
-            raw_slide = stream_ai_response(f"""Thiết kế 8 slide thuyết trình chi tiết về "{topic}". Mỗi slide đúng định dạng:
+            raw_slide = stream_ai_response(f"""Thiết kế 8 slide thuyết trình chi tiết về "{topic}" (bao gồm cả slide theo dõi hậu phẫu & biến chứng). Mỗi slide đúng định dạng:
 ### SLIDE [số]: [Tiêu đề]
 - Ý 1 (Diễn giải chi tiết 3-4 câu)
 - Ý 2 (Diễn giải chi tiết 3-4 câu)
