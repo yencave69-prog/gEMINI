@@ -320,7 +320,7 @@ def get_page_data(fname, page_num):
     if not row: return None
     return {"text": row[0], "fpath": os.path.join(PDF_DIR, fname), "page_index": page_num - 1}
 
-def smart_route_pages(query, books, max_pages=12):
+def smart_route_pages(query, books, max_pages=8):
     if not books: return "", [], []
     explicit = [int(p) for p in re.findall(r'(?:trang|tr\.?)\s*(\d+)', query.lower())]
     explicit_hits = []
@@ -356,7 +356,7 @@ def smart_route_pages(query, books, max_pages=12):
 
     if not combined: return "", [], []
     routed = "=== MỤC LỤC ĐỊNH HƯỚNG ===\n"
-    for bk, p, t in combined: routed += f"\n\n=== SÁCH: {bk} | TRANG {p} ===\n{t[:3500]}"
+    for bk, p, t in combined: routed += f"\n\n=== SÁCH: {bk} | TRANG {p} ===\n{t[:2800]}"
     return routed, [(bk, p) for bk, p, _ in combined], [(bk, p) for bk, p, _ in combined][:2]
 
 @st.cache_data(max_entries=40, show_spinner=False)
@@ -364,11 +364,11 @@ def get_page_image(fpath, page_index, zoom=1.15):
     if not os.path.exists(fpath): return None
     try:
         doc = fitz.open(fpath)
-        # Dùng JPEG thay vì PNG giúp giảm 80% dung lượng ảnh gửi cho AI nhưng vẫn sắc nét
         img_bytes = doc.load_page(page_index).get_pixmap(matrix=fitz.Matrix(zoom, zoom)).tobytes("jpeg")
         doc.close()
         return img_bytes
     except Exception: return None
+
 # ==================== 3. KHỞI TẠO STATE BỀN VỮNG ====================
 _saved_active = load_json_file(ACTIVE_SESSIONS_FILE, {})
 
@@ -386,12 +386,11 @@ _defaults = {
     "xray_session": lambda: None,
     "interactive_quiz": lambda: None,
     "slide_session": lambda: None,
-    "selected_model": lambda: "gemini-flash-lite-latest",
+    "selected_model": lambda: "gemini-2.0-flash", # Mặc định siêu tốc
     "_books": lambda: list(all_books_in_db),
     "current_page": lambda: "Hỏi đáp",
     "translated_pages_cache": dict,
     "lib_quizzes": dict,
-    "qa_vis_toggle": lambda: True,  # Mặc định LUÔN BẬT Đính kèm ảnh cho AI
 }
 for k, factory in _defaults.items():
     if k not in st.session_state: st.session_state[k] = factory()
@@ -496,22 +495,16 @@ def create_pptx_bytes(topic_title, raw_slide_text):
     buf = io.BytesIO(); prs.save(buf); buf.seek(0)
     return buf.getvalue()
 
-# ==================== 4. AI ENGINE & CẤU TRÚC BÀI SOẠN 8 PHẦN (CÓ MỤU HẬU PHẪU) ====================
+# ==================== 4. AI ENGINE SIÊU TỐC ====================
 @st.cache_data(ttl=3600, show_spinner=False)
 def scan_available_models(active_key: str):
-    fallback = ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-pro-latest"]
-    if not active_key: return fallback, False
-    try:
-        models = [m.name.replace("models/", "") for m in genai.Client(api_key=active_key).models.list() if "latest" in m.name.lower() and ("gemini" in m.name.lower() or "gemma" in m.name.lower()) and not any(ex in m.name.lower() for ex in ["2.5", "embedding", "imagen", "veo", "audio", "tts", "aqa", "learnlm", "robotics"])]
-        if not models: return fallback, True
-        models = sorted(list(set(models)), key=lambda n: (0 if n.lower() == "gemini-flash-lite-latest" else 1 if n.lower() == "gemini-flash-latest" else 2 if "flash" in n.lower() else 3, n))
-        if "gemini-flash-lite-latest" not in models: models.insert(0, "gemini-flash-lite-latest")
-        return models, True
-    except Exception: return fallback, False
+    fast_models = ["gemini-2.0-flash", "gemini-flash-lite-latest", "gemini-flash-latest"]
+    if not active_key: return fast_models, False
+    return fast_models, True
 
 def _get_fallback_models():
-    primary = st.session_state.get("selected_model", "gemini-flash-lite-latest")
-    candidates = [primary, "gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.0-flash"]
+    primary = st.session_state.get("selected_model", "gemini-2.0-flash")
+    candidates = [primary, "gemini-2.0-flash", "gemini-flash-lite-latest", "gemini-flash-latest"]
     seen = set()
     return [m for m in candidates if not (m in seen or seen.add(m))]
 
@@ -529,7 +522,7 @@ def generate_ai_response(prompt_text):
                     return client.models.generate_content(
                         model=model_name,
                         contents=prompt_text,
-                        config=types.GenerateContentConfig(temperature=0.35, max_output_tokens=8192)
+                        config=types.GenerateContentConfig(temperature=0.3, max_output_tokens=6000)
                     )
                 except Exception as e:
                     last_err = e
@@ -537,86 +530,86 @@ def generate_ai_response(prompt_text):
                     if "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str:
                         st.error("❌ Lỗi xác thực API Key. Hãy kiểm tra lại khóa API ở cột bên trái.")
                         st.stop()
-                    time.sleep(1.2 * (attempt + 1))
-    st.error(f"⚠️ Máy chủ AI đang quá tải tạm thời. Vui lòng thử lại sau vài giây. Chi tiết: {last_err}")
+                    time.sleep(0.8 * (attempt + 1))
+    st.error(f"⚠️ Máy chủ AI đang quá tải. Vui lòng thử lại! ({last_err})")
     st.stop()
 
-def stream_ai_response(prompt_text, visual_page_keys=None):
+def stream_ai_response(prompt_text, visual_page_keys=None, query_text=""):
     k = get_active_api_key()
     if not k:
         st.error("⚠️ Bạn chưa nhập GEMINI_API_KEY. Hãy mở mục 'Cập nhật API Key' ở cột bên trái.")
         st.stop()
     client = genai.Client(api_key=k)
     contents = []
-    if visual_page_keys:
-        # Gửi 1 trang ảnh JPEG trọng tâm nhất (zoom=0.95) để AI đọc hình siêu tốc
-        for (fname, p_num) in visual_page_keys[:1]:
-            img_b = get_page_image(os.path.join(PDF_DIR, fname), p_num - 1, zoom=0.95)
-            if img_b: contents.append(types.Part.from_bytes(data=img_b, mime_type="image/jpeg"))
+
+    need_vision = any(w in query_text.lower() for w in ["hình", "ảnh", "x-quang", "xquang", "phim", "ct", "mri", "sơ đồ", "dấu hiệu", "đường mổ", "góc"])
+    if visual_page_keys and need_vision:
+         fname, p_num = visual_page_keys[0]
+         img_b = get_page_image(os.path.join(PDF_DIR, fname), p_num - 1, zoom=0.85)
+         if img_b:
+             contents.append(types.Part.from_bytes(data=img_b, mime_type="image/jpeg"))
+
     contents.append(prompt_text)
 
     placeholder = st.empty()
-    placeholder.info("⏳ **Đang kết nối máy chủ AI và biên soạn câu trả lời... (Vui lòng chờ trong giây lát)**")
+    placeholder.info("⚡ **Đang kết nối siêu tốc với AI...**")
     
     full_text = ""
     last_err = None
 
-    # Cấu hình tắt chế độ chờ Thinking lâu của dòng Flash để chữ hiện ra ngay lập tức
     try:
         gen_config = types.GenerateContentConfig(
-            temperature=0.35,
-            max_output_tokens=8192,
+            temperature=0.3,
+            max_output_tokens=6000,
             thinking_config=types.ThinkingConfig(thinking_budget=0)
         )
     except Exception:
-        gen_config = types.GenerateContentConfig(temperature=0.35, max_output_tokens=8192)
+        gen_config = types.GenerateContentConfig(temperature=0.3, max_output_tokens=6000)
 
     for model_name in _get_fallback_models():
-        for attempt in range(2):
-            try:
-                full_text = ""
-                for chunk in client.models.generate_content_stream(
-                    model=model_name,
-                    contents=contents,
-                    config=gen_config
-                ):
-                    if chunk.text:
-                        full_text += chunk.text
-                        placeholder.markdown(format_small_citations(full_text), unsafe_allow_html=True)
-                if full_text.strip():
-                    placeholder.empty()
-                    return full_text
-            except Exception as e:
-                last_err = e
-                err_str = str(e)
-                if "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str:
-                    placeholder.empty()
-                    st.error("❌ Lỗi xác thực API Key (401). Hãy kiểm tra lại khóa API ở cột bên trái.")
-                    st.stop()
-                # Nếu model không hỗ trợ tham số thinking_config thì tự động gọi lại cấu hình chuẩn
-                if "thinking" in err_str.lower():
-                    gen_config = types.GenerateContentConfig(temperature=0.35, max_output_tokens=8192)
-                if len(full_text) > 400:
-                    placeholder.empty()
-                    return full_text
-                placeholder.info(f"⏳ **Máy chủ {model_name} đang bận, đang chuyển luồng xử lý nhanh (Lần thử {attempt+1})...**")
-                time.sleep(0.8)
-
         try:
-            res = client.models.generate_content(
+            full_text = ""
+            last_render_time = 0
+            for chunk in client.models.generate_content_stream(
                 model=model_name,
                 contents=contents,
-                config=types.GenerateContentConfig(temperature=0.35, max_output_tokens=8192)
-            )
-            if res and res.text:
+                config=gen_config
+            ):
+                if chunk.text:
+                    full_text += chunk.text
+                    now = time.time()
+                    if now - last_render_time > 0.12:
+                        placeholder.markdown(format_small_citations(full_text + " ▌"), unsafe_allow_html=True)
+                        last_render_time = now
+            if full_text.strip():
                 placeholder.empty()
-                return res.text
+                return full_text
         except Exception as e:
             last_err = e
+            err_str = str(e)
+            if "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str:
+                placeholder.empty()
+                st.error("❌ Lỗi xác thực API Key (401). Hãy kiểm tra lại khóa API ở cột bên trái.")
+                st.stop()
+            if "thinking" in err_str.lower():
+                gen_config = types.GenerateContentConfig(temperature=0.3, max_output_tokens=6000)
+                try:
+                    for chunk in client.models.generate_content_stream(model=model_name, contents=contents, config=gen_config):
+                        if chunk.text:
+                            full_text += chunk.text
+                            placeholder.markdown(format_small_citations(full_text + " ▌"), unsafe_allow_html=True)
+                    if full_text.strip():
+                        placeholder.empty()
+                        return full_text
+                except Exception as e2:
+                    last_err = e2
+            if len(full_text) > 300:
+                placeholder.empty()
+                return full_text
             continue
 
     placeholder.empty()
-    st.error(f"⚠️ Máy chủ Google Gemini hiện đang quá tải. Vui lòng bấm gửi lại câu hỏi sau vài giây! ({last_err})")
+    st.error(f"⚠️ Máy chủ AI đang bận. Vui lòng thử lại! ({last_err})")
     st.stop()
 
 @st.cache_data(max_entries=100, show_spinner=False)
@@ -630,7 +623,7 @@ def translate_to_vietnamese_cached(raw_text: str):
             "rõ ràng, giữ nguyên các số hiệu hình ảnh (như Fig, Table) và cấu trúc đoạn. "
             "Chỉ trả về nội dung bản dịch Tiếng Việt, không thêm lời bình:\n\n" + raw_text[:4500]
         )
-        for m in ["gemini-flash-lite-latest", "gemini-flash-latest"]:
+        for m in ["gemini-2.0-flash", "gemini-flash-lite-latest"]:
             try:
                 res = client.models.generate_content(
                     model=m,
@@ -711,34 +704,39 @@ def display_cited_pages(response_text, key_prefix="cite", candidate_pages=None):
     if not cited: return
     matched = [(bk, p, get_page_data(bk, p)) for bk, p in (candidate_pages or []) if p in cited and get_page_data(bk, p)]
     if not matched:
-        for p in cited[:5]:
+        for p in cited[:4]:
             for bk in st.session_state.get("_books", []):
                 d = get_page_data(bk, p)
                 if d: matched.append((bk, p, d)); break
     if not matched: return
     st.markdown("#### 📖 Nội dung & Hình ảnh trích xuất từ sách gốc:")
-    for idx, (bk, p, d) in enumerate(matched[:5]):
+    for idx, (bk, p, d) in enumerate(matched[:4]):
         page_cache_key = f"{bk}_{p}"
-        with st.expander(f"Xem gốc: {bk} - Trang {p}"):
+        with st.expander(f"📄 Xem gốc: {bk} - Trang {p}"):
             raw_txt = d["text"] or ""
-            vn_chars = re.findall(r'[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]', raw_txt[:1000].lower())
-            is_english = len(vn_chars) <= 12
-
             display_txt = st.session_state.translated_pages_cache.get(page_cache_key, raw_txt)
-            if is_english and page_cache_key not in st.session_state.translated_pages_cache:
-                if st.button(f"🌐 Dịch trang {p} ({bk}) sang Tiếng Việt", key=f"tr_btn_{key_prefix}_{idx}_{p}"):
-                    with st.spinner("⏳ Đang dịch sang Tiếng Việt..."):
-                        st.session_state.translated_pages_cache[page_cache_key] = translate_to_vietnamese_cached(raw_txt)
-                        display_txt = st.session_state.translated_pages_cache[page_cache_key]
-                        st.rerun()
 
-            img_data = get_page_image(d["fpath"], d["page_index"])
-            if img_data:
-                c1, c2 = st.columns([3, 2])
-                with c1: st.image(img_data, use_container_width=True)
-                with c2: st.text_area("Văn bản trang sách:", value=display_txt, height=280, disabled=True, key=f"{key_prefix}_{idx}_{p}")
+            c_btn1, c_btn2 = st.columns(2)
+            with c_btn1:
+                show_pdf_img = st.toggle(f"🖼️ Tải ảnh chụp Trang {p}", value=False, key=f"ld_img_{key_prefix}_{idx}_{p}")
+            with c_btn2:
+                vn_chars = re.findall(r'[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]', raw_txt[:800].lower())
+                if len(vn_chars) <= 12 and page_cache_key not in st.session_state.translated_pages_cache:
+                    if st.button(f"🌐 Dịch trang {p} sang Tiếng Việt", key=f"tr_btn_{key_prefix}_{idx}_{p}"):
+                        with st.spinner("⏳ Đang dịch sang Tiếng Việt..."):
+                            st.session_state.translated_pages_cache[page_cache_key] = translate_to_vietnamese_cached(raw_txt)
+                            st.rerun()
+
+            if show_pdf_img:
+                img_data = get_page_image(d["fpath"], d["page_index"], zoom=1.15)
+                if img_data:
+                    c1, c2 = st.columns([3, 2])
+                    with c1: st.image(img_data, use_container_width=True)
+                    with c2: st.text_area("Văn bản trang sách:", value=display_txt, height=280, disabled=True, key=f"{key_prefix}_{idx}_{p}")
+                else:
+                    st.text_area("Văn bản trang sách:", value=display_txt, height=220, disabled=True, key=f"{key_prefix}_{idx}_{p}")
             else:
-                st.text_area("Văn bản trang sách:", value=display_txt, height=220, disabled=True, key=f"{key_prefix}_{idx}_{p}")
+                st.text_area("Văn bản trang sách:", value=display_txt, height=200, disabled=True, key=f"{key_prefix}_{idx}_{p}")
 
 def render_article_and_recall(text, key_prefix="art"):
     dots = re.findall(r'```dot\n(.*?)\n```', text, re.DOTALL)
@@ -846,17 +844,12 @@ D. [...]
                 st.rerun()
 
 def inject_floating_vertical_toolbar():
-    """
-    Tự động tạo lại Thanh Công Cụ Dọc ngay khi khung Quill hiển thị,
-    và tự động ẩn ngay khi người dùng tắt Chỉnh sửa hoặc gập bài viết lại.
-    """
     components.html(
         """
         <script>
         (function() {
             const pDoc = window.parent.document;
 
-            // 1. Nạp CSS cho thanh công cụ dọc
             if (!pDoc.getElementById('dudu-vtoolbar-style')) {
                 const st = pDoc.createElement('style');
                 st.id = 'dudu-vtoolbar-style';
@@ -901,12 +894,10 @@ def inject_floating_vertical_toolbar():
                 pDoc.head.appendChild(st);
             }
 
-            // 2. Tìm khung Quill Editor đang mở trên màn hình
             function getActiveQuillContext() {
                 const iframes = pDoc.querySelectorAll('iframe');
                 for (const ifr of iframes) {
                     try {
-                        // Kiểm tra xem iframe có nằm trong một thẻ details (expander) đang bị đóng không
                         const closedDetails = ifr.closest('details:not([open])');
                         if (closedDetails) continue;
 
@@ -925,7 +916,6 @@ def inject_floating_vertical_toolbar():
                 return null;
             }
 
-            // 3. Hàm đảm bảo Thanh công cụ dọc luôn được tạo nếu chưa có
             function ensureDockExists() {
                 let dock = pDoc.getElementById('dudu-vertical-dock');
                 if (dock) return dock;
@@ -938,22 +928,22 @@ def inject_floating_vertical_toolbar():
 
                 dock.innerHTML = `
                     <div class="dudu-vlabel">SOẠN</div>
-                    <button class="dudu-vbtn" data-cmd="bold" title="In đậm (Bold)"><b>B</b></button>
-                    <button class="dudu-vbtn" data-cmd="italic" title="In nghiêng (Italic)"><i>I</i></button>
-                    <button class="dudu-vbtn" data-cmd="underline" title="Gạch chân (Underline)"><u>U</u></button>
+                    <button class="dudu-vbtn" data-cmd="bold" title="In đậm"><b>B</b></button>
+                    <button class="dudu-vbtn" data-cmd="italic" title="In nghiêng"><i>I</i></button>
+                    <button class="dudu-vbtn" data-cmd="underline" title="Gạch chân"><u>U</u></button>
                     <button class="dudu-vbtn" data-cmd="h2" title="Tiêu đề lớn">H2</button>
-                    <button class="dudu-vbtn" data-cmd="bullet" title="Danh sách gạch đầu dòng">•≡</button>
-                    <button class="dudu-vbtn" data-cmd="image" title="Chèn hình ảnh ngay tại vị trí con trỏ">🖼️</button>
+                    <button class="dudu-vbtn" data-cmd="bullet" title="Danh sách">•≡</button>
+                    <button class="dudu-vbtn" data-cmd="image" title="Chèn ảnh">🖼️</button>
                     <div class="dudu-vsep"></div>
                     <div class="dudu-vlabel">BÚT TÔ</div>
-                    <button class="dudu-vbtn pen-btn" data-pen="#FFF59D" style="background:#FFF59D !important;color:#111 !important;" title="Cầm Bút Vàng">🟨</button>
-                    <button class="dudu-vbtn pen-btn" data-pen="#C8E6C9" style="background:#C8E6C9 !important;color:#111 !important;" title="Cầm Bút Xanh lá">🟩</button>
-                    <button class="dudu-vbtn pen-btn" data-pen="#BBDEFB" style="background:#BBDEFB !important;color:#111 !important;" title="Cầm Bút Xanh dương">🟦</button>
-                    <button class="dudu-vbtn pen-btn" data-pen="#F8BBD0" style="background:#F8BBD0 !important;color:#111 !important;" title="Cầm Bút Hồng">🩷</button>
-                    <button class="dudu-vbtn pen-btn" data-pen="ERASE" title="Cục tẩy xóa màu tô">🧹</button>
-                    <button class="dudu-vbtn pen-btn active-pen" data-pen="OFF" title="Tắt bút tô">🚫</button>
+                    <button class="dudu-vbtn pen-btn" data-pen="#FFF59D" style="background:#FFF59D !important;color:#111 !important;" title="Bút Vàng">🟨</button>
+                    <button class="dudu-vbtn pen-btn" data-pen="#C8E6C9" style="background:#C8E6C9 !important;color:#111 !important;" title="Bút Xanh lá">🟩</button>
+                    <button class="dudu-vbtn pen-btn" data-pen="#BBDEFB" style="background:#BBDEFB !important;color:#111 !important;" title="Bút Xanh dương">🟦</button>
+                    <button class="dudu-vbtn pen-btn" data-pen="#F8BBD0" style="background:#F8BBD0 !important;color:#111 !important;" title="Bút Hồng">🩷</button>
+                    <button class="dudu-vbtn pen-btn" data-pen="ERASE" title="Cục tẩy">🧹</button>
+                    <button class="dudu-vbtn pen-btn active-pen" data-pen="OFF" title="Tắt bút">🚫</button>
                     <div class="dudu-vsep"></div>
-                    <button class="dudu-vbtn" data-cmd="save" style="background:#38B2AC !important;color:#FFF !important;" title="Lưu nhanh bài viết">💾</button>
+                    <button class="dudu-vbtn" data-cmd="save" style="background:#38B2AC !important;color:#FFF !important;" title="Lưu bài">💾</button>
                 `;
 
                 dock.querySelectorAll('.dudu-vbtn').forEach((btn) => {
@@ -1019,7 +1009,6 @@ def inject_floating_vertical_toolbar():
                 return dock;
             }
 
-            // 4. Đồng bộ liên tục: Có Quill đang mở -> Hiện thanh dọc & bung full chiều cao; Đóng Quill -> Xóa thanh dọc
             function syncDockAndQuill() {
                 const ctx = getActiveQuillContext();
                 const existingDock = pDoc.getElementById('dudu-vertical-dock');
@@ -1032,7 +1021,6 @@ def inject_floating_vertical_toolbar():
                 const dock = ensureDockExists();
                 dock.style.display = 'flex';
 
-                // Căn lề trái theo trạng thái đóng/mở của Sidebar
                 const sb = pDoc.querySelector('[data-testid="stSidebar"]');
                 if (sb) {
                     const sbRect = sb.getBoundingClientRect();
@@ -1098,7 +1086,6 @@ def inject_floating_vertical_toolbar():
     )
 
 def hide_floating_vertical_toolbar():
-    """Xóa hoàn toàn thanh công cụ dọc khỏi màn hình khi không ở chế độ chỉnh sửa"""
     components.html(
         """
         <script>
@@ -1247,7 +1234,7 @@ with st.sidebar:
 
     avail_models, key_ok = scan_available_models(API_KEY)
     st.markdown("Mô hình AI:")
-    current_m = st.session_state.get("selected_model", "gemini-flash-lite-latest")
+    current_m = st.session_state.get("selected_model", "gemini-2.0-flash")
     cur_idx = avail_models.index(current_m) if current_m in avail_models else 0
     selected_m = st.selectbox("Mô hình AI", avail_models, index=cur_idx, label_visibility="collapsed")
     if selected_m != st.session_state.selected_model: st.session_state.selected_model = selected_m; st.rerun()
@@ -1322,7 +1309,6 @@ if page != "Kho bài viết":
 if page == "Hỏi đáp":
     c_opt1, c_opt2, c_opt3 = st.columns([2.2, 1.8, 1])
     with c_opt1: ans_mode = st.radio("Chế độ:", ["Tự động", "Giải thích", "Bài soạn"], horizontal=True, key="qa_mode")
-    # Đã đặt mặc định Đính kèm ảnh cho AI luôn BẬT (value=True)
     with c_opt2: st.write(""); use_vision = st.toggle("Đính kèm ảnh cho AI", value=True, key="qa_vis_toggle")
     with c_opt3:
         st.write("")
@@ -1337,7 +1323,7 @@ if page == "Hỏi đáp":
         if not books: st.warning("Vui lòng chọn ít nhất 1 cuốn sách ở thanh bên trái.")
         else:
             with st.spinner("⏳ Đang tra cứu giáo trình và biên soạn câu trả lời... (Vui lòng chờ trong giây lát)"):
-                ctx, matched, vis = smart_route_pages(query, books, max_pages=12)
+                ctx, matched, vis = smart_route_pages(query, books, max_pages=8)
                 q_low = query.lower()
                 is_specific = any(k in q_low for k in ["tại sao", "vì sao", "như thế nào", "khi nào", "bao lâu", "chỉ định", "biến chứng", "cơ chế", "là gì", "so sánh", "?"]) or len(q_low.split()) >= 6
                 use_8 = (ans_mode == "Bài soạn") or (ans_mode == "Tự động" and not is_specific)
@@ -1355,7 +1341,7 @@ TRÌNH BÀY DẠNG LIST CHO TỪNG Ý LỚN DƯỚI ĐÂY (TIÊU ĐỀ LỚN PH�
                 else:
                     prompt = f"""TÀI LIỆU GIÁO TRÌNH:\n{ctx}\n\nCHỦ ĐỀ: "{query}"\n\n{PEDAGOGICAL_STYLE_RULES}\n{ARTICLE_8_PART_TEMPLATE}"""
 
-                ans_main = stream_ai_response(prompt, vis if use_vision else None)
+                ans_main = stream_ai_response(prompt, vis if use_vision else None, query_text=query)
                 st.session_state.qa_session = {
                     "query": query,
                     "matched_pages": matched,
@@ -1409,9 +1395,9 @@ TRÌNH BÀY DẠNG LIST CHO TỪNG Ý LỚN DƯỚI ĐÂY (TIÊU ĐỀ LỚN PH�
                 with st.spinner("⏳ Đang xử lý yêu cầu bổ sung... (Vui lòng chờ)"):
                     extra_ctx, _, ex_vis = smart_route_pages(sess["query"] + " " + follow_q, st.session_state.get("_books", []), max_pages=10)
                     if "chỉnh sửa" in mode.lower():
-                        sess["main_answer"] = stream_ai_response(f"TÀI LIỆU:\n{extra_ctx[:18000]}\nCHỦ ĐỀ: {sess['query']}\nBÀI CŨ: {sess['main_answer']}\nYÊU CẦU SỬA: {follow_q}\n{PEDAGOGICAL_STYLE_RULES}\n{ARTICLE_8_PART_TEMPLATE}\nViết lại toàn bài chi tiết kèm [Trang X].", ex_vis if use_vision else None)
+                        sess["main_answer"] = stream_ai_response(f"TÀI LIỆU:\n{extra_ctx[:18000]}\nCHỦ ĐỀ: {sess['query']}\nBÀI CŨ: {sess['main_answer']}\nYÊU CẦU SỬA: {follow_q}\n{PEDAGOGICAL_STYLE_RULES}\n{ARTICLE_8_PART_TEMPLATE}\nViết lại toàn bài chi tiết kèm [Trang X].", ex_vis if use_vision else None, query_text=follow_q)
                     else:
-                        ans_f = stream_ai_response(f"CHỦ ĐỀ GỐC: {sess['query']}\nTÀI LIỆU:\n{extra_ctx[:16000]}\nBÀI TRƯỚC:\n{sess['main_answer'][:4000]}\nYÊU CẦU: {follow_q}\n{PEDAGOGICAL_STYLE_RULES}\nGiải thích sâu sắc kèm [Trang X].", ex_vis if use_vision else None)
+                        ans_f = stream_ai_response(f"CHỦ ĐỀ GỐC: {sess['query']}\nTÀI LIỆU:\n{extra_ctx[:16000]}\nBÀI TRƯỚC:\n{sess['main_answer'][:4000]}\nYÊU CẦU: {follow_q}\n{PEDAGOGICAL_STYLE_RULES}\nGiải thích sâu sắc kèm [Trang X].", ex_vis if use_vision else None, query_text=follow_q)
                         sess["discussions"].append({"type": "feedback", "user_text": follow_q, "ai_reply": ans_f, "time": datetime.datetime.now().strftime("%H:%M")})
                     save_active_sessions()
                     st.rerun()
@@ -1463,7 +1449,7 @@ elif page == "Bảng tin":
         if not ns["main_answer"]:
             with st.spinner("⏳ Đang biên soạn bài chuyên đề 8 phần (kèm mục Hậu phẫu & Dặn dò)..."):
                 ctx, mp, _ = smart_route_pages(ns["query"], st.session_state.get("_books", all_books_in_db), max_pages=12)
-                ans_news = stream_ai_response(f"TÀI LIỆU:\n{ctx}\n{PEDAGOGICAL_STYLE_RULES}\nCHỦ ĐỀ: '{ns['query']}'\n{ARTICLE_8_PART_TEMPLATE}")
+                ans_news = stream_ai_response(f"TÀI LIỆU:\n{ctx}\n{PEDAGOGICAL_STYLE_RULES}\nCHỦ ĐỀ: '{ns['query']}'\n{ARTICLE_8_PART_TEMPLATE}", query_text=ns["query"])
                 ns.update({"matched_pages": mp, "main_answer": ans_news})
                 save_active_sessions()
                 gc.collect()
@@ -1583,7 +1569,7 @@ elif page == "Trực Cấp cứu":
                     with get_db() as conn:
                         sample = conn.execute(f"SELECT book, page, text FROM pages WHERE book IN ({ph_b}) ORDER BY RANDOM() LIMIT 10", er_books).fetchall()
                     ctx = "\n\n".join(f"=== SÁCH: {b} | TRANG {p} ===\n{t[:3000]}" for b, p, t in sample)
-                ans_er = stream_ai_response(f"Bạn là BS Trưởng tua trực Chấn thương Chỉnh hình. Dựa sát vào TÀI LIỆU SÁCH CẤP CỨU (thct) dưới đây:\n{ctx[:22000]}\nTạo BƯỚC 1/3: bệnh cảnh lâm sàng cấp cứu thực tế. CHƯA tiết lộ chẩn đoán xác định và X-quang. Đặt 3 câu hỏi thử thách xử trí ban đầu. Cần gạch đầu dòng rõ ràng. Chủ đề: {topic or 'Tình huống cấp cứu từ sách thct'}")
+                ans_er = stream_ai_response(f"Bạn là BS Trưởng tua trực Chấn thương Chỉnh hình. Dựa sát vào TÀI LIỆU SÁCH CẤP CỨU (thct) dưới đây:\n{ctx[:22000]}\nTạo BƯỚC 1/3: bệnh cảnh lâm sàng cấp cứu thực tế. CHƯA tiết lộ chẩn đoán xác định và X-quang. Đặt 3 câu hỏi thử thách xử trí ban đầu. Cần gạch đầu dòng rõ ràng. Chủ đề: {topic or 'Tình huống cấp cứu từ sách thct'}", query_text=topic)
                 st.session_state.er_chat = [{"role": "assistant", "content": ans_er}]
                 st.session_state.er_case_active = True
                 save_active_sessions()
@@ -1617,7 +1603,7 @@ elif page == "Trực Cấp cứu":
                         "1. Chấm điểm (thang 100), giải thích chi tiết đúng/sai theo sát phác đồ sách thct kèm [Trang X] bằng dạng list rõ ràng, in hoa tiêu đề.\n"
                         "2. Chuyển bước tiếp theo (Bước 1->2 cung cấp X-quang/CLS; Bước 2->3 hỏi kế hoạch phẫu thuật/bảo tồn, theo dõi hậu phẫu & PHCN; xong Bước 3 tổng kết + sơ đồ ```dot``` + 3 câu hỏi ôn tập ===ON_TAP===)."
                     )
-                    reply_er = stream_ai_response(er_prompt)
+                    reply_er = stream_ai_response(er_prompt, query_text=u)
             st.session_state.er_chat.append({"role": "assistant", "content": reply_er})
             save_active_sessions()
             st.rerun()
@@ -1637,7 +1623,7 @@ elif page == "Tạo thẻ Anki":
     if topic:
         with st.spinner("⏳ Đang biên soạn 10 thẻ Flashcard Anki... (Vui lòng chờ)"):
             ctx, _, _ = smart_route_pages(topic, st.session_state.get("_books", all_books_in_db), max_pages=12)
-            raw_anki = stream_ai_response(f"Tạo 10 Flashcard (Hỏi - Đáp giải thích sâu cơ chế giải phẫu/sinh cơ học/theo dõi hậu phẫu dạng gạch đầu dòng kèm [Trang X]) về: {topic}.\nPhần 1: Hiển thị đọc trên web.\nPhần 2: Đặt trong khối ```csv\nMặt trước ; Mặt sau\n``` để import vào Anki.\nNguồn:\n{ctx}")
+            raw_anki = stream_ai_response(f"Tạo 10 Flashcard (Hỏi - Đáp giải thích sâu cơ chế giải phẫu/sinh cơ học/theo dõi hậu phẫu dạng gạch đầu dòng kèm [Trang X]) về: {topic}.\nPhần 1: Hiển thị đọc trên web.\nPhần 2: Đặt trong khối ```csv\nMặt trước ; Mặt sau\n``` để import vào Anki.\nNguồn:\n{ctx}", query_text=topic)
             csv_m = re.search(r'```csv\n(.*?)\n```', raw_anki, re.DOTALL)
             st.session_state.anki_session = {"topic": topic, "display": re.sub(r'```csv\n.*?\n```', '', raw_anki, flags=re.DOTALL), "csv": csv_m.group(1) if csv_m else None}
             save_active_sessions()
@@ -1756,7 +1742,7 @@ E. [...]
                     st.markdown(m["question"])
                     for o in m.get("options", []): st.markdown(f"- {o}")
                     st.markdown(format_small_citations(f"**Đáp án đúng: {m['answer']}**\n\n{m.get('explanation', '')}"), unsafe_allow_html=True)
-                    if st.button("Xóa khỏi sổ tay", key=f"dms_{i}"): st.session_state.mistakes = [x for x in st.session_state.mistakes if x.get("id") != m.get("id")]; save_json_file(MISTAKES_FILE, st.session_state.mistakes); st.rerun()
+                    if st.button("Xóa khỏi sổ tay", key=f"dms_{i}"): st.session_state.mistakes = [x for x in st.session_state.mistakes if x.get("id"] != m.get("id")]; save_json_file(MISTAKES_FILE, st.session_state.mistakes); st.rerun()
 
     with t3:
         if not due_list: st.success("Hôm nay không có câu hỏi nào đến hạn ôn tập SRS.")
@@ -1784,7 +1770,7 @@ elif page == "Tạo Slide":
 - Ý 2 (Diễn giải chi tiết 3-4 câu)
 - Ý 3 (Diễn giải chi tiết 3-4 câu)
 **Ghi chú thuyết trình:** (Giải thích thật sâu cơ chế giải phẫu, sinh cơ học dạng list kèm [Trang X])
-Nguồn: {ctx}""")
+Nguồn: {ctx}""", query_text=topic)
             st.session_state.slide_session = {"topic": topic, "text": raw_slide, "pptx": create_pptx_bytes(topic, raw_slide)}
             log_activity()
             st.rerun()
