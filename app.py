@@ -92,7 +92,6 @@ def save_json_file(filepath, data):
         pass
 
 def save_active_sessions():
-    """Lưu gọn nhẹ các phiên đang mở xuống đĩa để chuyển tab hoặc bấm Lưu không bao giờ mất bài"""
     qa_s = st.session_state.get("qa_session")
     qa_light = None
     if qa_s:
@@ -496,7 +495,7 @@ def create_pptx_bytes(topic_title, raw_slide_text):
     buf = io.BytesIO(); prs.save(buf); buf.seek(0)
     return buf.getvalue()
 
-# ==================== 4. AI ENGINE & CẤU TRÚC BÀI SOẠN CÓ MỤC HẬU PHẪU ====================
+# ==================== 4. AI ENGINE & CẤU TRÚC BÀI SOẠN 8 PHẦN (CÓ MỤC HẬU PHẪU) ====================
 @st.cache_data(ttl=3600, show_spinner=False)
 def scan_available_models(active_key: str):
     fallback = ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-pro-latest"]
@@ -831,98 +830,285 @@ D. [...]
                 log_activity()
                 st.rerun()
 
-def inject_sticky_toolbar_and_highlighter_js(pen_color_hex: str):
+def inject_floating_vertical_toolbar():
     """
-    Nâng cấp 1 & 2:
-    - Ghim thanh công cụ (.ql-toolbar) trượt theo khi kéo bài viết xuống.
-    - Cho phép bấm chọn bút Highlight trước rồi bôi đen văn bản tới đâu tự động tô màu tới đó.
+    Tạo Thanh Công Cụ Dọc (Vertical Floating Dock) nằm cố định bên trái,
+    nằm ngoài khung bài viết, luôn trượt theo con lăn chuột của trang web
+    và tự động mở rộng chiều cao khung viết bài hết cỡ.
     """
     components.html(
-        f"""
+        """
         <script>
-        (function() {{
-            const penColor = "{pen_color_hex}";
-            const parentDoc = window.parent.document;
+        (function() {
+            const pDoc = window.parent.document;
 
-            function enhanceQuillIframes() {{
-                const iframes = parentDoc.querySelectorAll('iframe');
-                iframes.forEach((ifr) => {{
-                    try {{
+            // 1. Tạo CSS cho Thanh công cụ dọc cố định bên trái (nằm ngoài bài viết)
+            if (!pDoc.getElementById('dudu-vtoolbar-style')) {
+                const st = pDoc.createElement('style');
+                st.id = 'dudu-vtoolbar-style';
+                st.innerHTML = `
+                    #dudu-vertical-dock {
+                        position: fixed !important;
+                        top: 50% !important;
+                        transform: translateY(-50%) !important;
+                        left: 265px !important;
+                        z-index: 999998 !important;
+                        background: #1B2733 !important;
+                        border: 1.5px solid #38B2AC !important;
+                        border-radius: 14px !important;
+                        padding: 8px 6px !important;
+                        display: flex !important;
+                        flex-direction: column !important;
+                        gap: 5px !important;
+                        box-shadow: 0 8px 24px rgba(0,0,0,0.45) !important;
+                        width: 52px !important;
+                        align-items: center !important;
+                        transition: left 0.2s ease !important;
+                    }
+                    @media (max-width: 900px) {
+                        #dudu-vertical-dock {
+                            left: 10px !important;
+                        }
+                    }
+                    .dudu-vbtn {
+                        width: 38px !important;
+                        height: 34px !important;
+                        border-radius: 8px !important;
+                        border: 1px solid #2C3E50 !important;
+                        background: #131C26 !important;
+                        color: #ECF2F8 !important;
+                        font-weight: 700 !important;
+                        font-size: 13px !important;
+                        cursor: pointer !important;
+                        display: flex !important;
+                        align-items: center !important;
+                        justify-content: center !important;
+                        transition: all 0.15s ease !important;
+                        padding: 0 !important;
+                    }
+                    .dudu-vbtn:hover {
+                        border-color: #38B2AC !important;
+                        transform: scale(1.07) !important;
+                    }
+                    .dudu-vbtn.active-pen {
+                        border: 2.5px solid #38B2AC !important;
+                        box-shadow: 0 0 10px rgba(56, 178, 172, 0.7) !important;
+                        transform: scale(1.08) !important;
+                    }
+                    .dudu-vsep {
+                        width: 32px !important;
+                        height: 1px !important;
+                        background: #2C3E50 !important;
+                        margin: 2px 0 !important;
+                    }
+                    .dudu-vlabel {
+                        font-size: 9px !important;
+                        color: #9FB3C8 !important;
+                        text-align: center !important;
+                        font-weight: 600 !important;
+                        letter-spacing: 0.3px !important;
+                    }
+                `;
+                pDoc.head.appendChild(st);
+            }
+
+            // 2. Hàm tìm iframe của Quill Editor đang mở và tự động bung chiều cao hết cỡ
+            function getActiveQuillContext() {
+                const iframes = pDoc.querySelectorAll('iframe');
+                for (const ifr of iframes) {
+                    try {
                         const idoc = ifr.contentDocument || ifr.contentWindow.document;
-                        if (!idoc) return;
-                        const toolbar = idoc.querySelector('.ql-toolbar');
-                        const container = idoc.querySelector('.ql-container');
+                        if (!idoc) continue;
                         const editor = idoc.querySelector('.ql-editor');
-                        if (!toolbar || !editor) return;
+                        const toolbar = idoc.querySelector('.ql-toolbar');
+                        if (editor && toolbar) {
+                            return { ifr, idoc, editor, toolbar };
+                        }
+                    } catch (e) {}
+                }
+                return null;
+            }
 
-                        // 1. Tạo thanh công cụ trượt theo (Sticky Toolbar) + Khung cuộn mượt mà
-                        if (!idoc.getElementById('dudu-sticky-quill-style')) {{
-                            const st = idoc.createElement('style');
-                            st.id = 'dudu-sticky-quill-style';
-                            st.innerHTML = `
-                                .ql-toolbar {{
-                                    position: sticky !important;
-                                    top: 0 !important;
-                                    z-index: 99999 !important;
-                                    background: #F8FAFC !important;
-                                    box-shadow: 0 2px 8px rgba(0,0,0,0.12) !important;
-                                    border-bottom: 2px solid #CBD5E1 !important;
-                                }}
-                                .ql-container {{
-                                    max-height: 68vh !important;
-                                    overflow-y: auto !important;
-                                }}
-                                .ql-editor {{
-                                    min-height: 420px !important;
-                                    padding-bottom: 60px !important;
-                                }}
-                                .ql-editor.pen-active {{
-                                    cursor: text !important;
-                                }}
-                            `;
-                            idoc.head.appendChild(st);
-                        }}
+            function autoResizeQuillIframe() {
+                const ctx = getActiveQuillContext();
+                const existingDock = pDoc.getElementById('dudu-vertical-dock');
+                if (!ctx) {
+                    if (existingDock) existingDock.style.display = 'none';
+                    return;
+                }
+                if (existingDock) existingDock.style.display = 'flex';
 
-                        // 2. Cập nhật màu bút Highlight đang chọn (bôi tới đâu tô màu tới đó)
-                        idoc._duduPenColor = penColor;
-                        if (penColor !== "OFF") {{
-                            editor.classList.add('pen-active');
-                        }} else {{
-                            editor.classList.remove('pen-active');
-                        }}
+                // Điều chỉnh vị trí left của thanh dọc nếu Sidebar đang thu gọn
+                const sb = pDoc.querySelector('[data-testid="stSidebar"]');
+                if (sb && existingDock) {
+                    const sbRect = sb.getBoundingClientRect();
+                    const leftPos = Math.max(12, Math.round(sbRect.right + 12));
+                    existingDock.style.left = leftPos + 'px';
+                }
 
-                        if (!editor._duduHighlighterBound) {{
-                            editor._duduHighlighterBound = true;
-                            const applyMarker = () => {{
-                                const activeColor = idoc._duduPenColor;
-                                if (!activeColor || activeColor === "OFF") return;
-                                setTimeout(() => {{
-                                    try {{
-                                        const sel = idoc.getSelection();
-                                        if (!sel || sel.isCollapsed || sel.toString().trim().length === 0) return;
-                                        idoc.execCommand('styleWithCSS', false, true);
-                                        if (activeColor === "ERASE") {{
-                                            idoc.execCommand('hiliteColor', false, 'transparent');
-                                            idoc.execCommand('backColor', false, 'transparent');
-                                        }} else {{
-                                            idoc.execCommand('hiliteColor', false, activeColor);
-                                        }}
-                                        // Kích hoạt sự kiện input để Quill lưu ngay trạng thái mới về Streamlit
-                                        editor.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                                    }} catch (err) {{}}
-                                }}, 40);
-                            }};
-                            editor.addEventListener('mouseup', applyMarker);
-                            editor.addEventListener('touchend', applyMarker);
-                        }}
-                    }} catch (e) {{}}
-                }});
-            }}
+                const { ifr, idoc, editor } = ctx;
+                // Bung chiều cao khung soạn thảo để không bị thanh cuộn nhỏ xíu bên trong
+                if (!idoc.getElementById('dudu-fullheight-style')) {
+                    const st2 = idoc.createElement('style');
+                    st2.id = 'dudu-fullheight-style';
+                    st2.innerHTML = `
+                        html, body { height: auto !important; overflow: visible !important; }
+                        .ql-container { height: auto !important; max-height: none !important; overflow: visible !important; border-radius: 10px !important; }
+                        .ql-editor { height: auto !important; max-height: none !important; min-height: 550px !important; overflow: visible !important; padding-bottom: 50px !important; }
+                    `;
+                    idoc.head.appendChild(st2);
+                }
 
-            enhanceQuillIframes();
-            setTimeout(enhanceQuillIframes, 350);
-            setTimeout(enhanceQuillIframes, 900);
-        }})();
+                const contentH = Math.max(620, editor.scrollHeight + 95);
+                if (Math.abs(ifr.clientHeight - contentH) > 25) {
+                    ifr.style.height = contentH + 'px';
+                    if (ifr.parentElement) ifr.parentElement.style.height = contentH + 'px';
+                }
+
+                // Gắn sự kiện Bút Highlight cầm tay (bôi tới đâu tô màu tới đó)
+                if (!editor._duduPenBound) {
+                    editor._duduPenBound = true;
+                    const applyPenOnSelect = () => {
+                        const penColor = pDoc._duduActivePen || 'OFF';
+                        if (penColor === 'OFF') return;
+                        setTimeout(() => {
+                            try {
+                                const sel = idoc.getSelection();
+                                if (!sel || sel.isCollapsed || sel.toString().trim().length === 0) return;
+                                idoc.execCommand('styleWithCSS', false, true);
+                                if (penColor === 'ERASE') {
+                                    idoc.execCommand('hiliteColor', false, 'transparent');
+                                    idoc.execCommand('backColor', false, 'transparent');
+                                    idoc.execCommand('removeFormat', false, null);
+                                } else {
+                                    idoc.execCommand('hiliteColor', false, penColor);
+                                    idoc.execCommand('foreColor', false, '#111827');
+                                }
+                                editor.dispatchEvent(new Event('input', { bubbles: true }));
+                            } catch (err) {}
+                        }, 35);
+                    };
+                    editor.addEventListener('mouseup', applyPenOnSelect);
+                    editor.addEventListener('touchend', applyPenOnSelect);
+                    editor.addEventListener('input', () => setTimeout(autoResizeQuillIframe, 50));
+                }
+            }
+
+            // 3. Khởi tạo Thanh Công Cụ Dọc cố định bên trái (nằm ngoài bài viết)
+            let dock = pDoc.getElementById('dudu-vertical-dock');
+            if (!dock) {
+                dock = pDoc.createElement('div');
+                dock.id = 'dudu-vertical-dock';
+                pDoc.body.appendChild(dock);
+            }
+
+            pDoc._duduActivePen = pDoc._duduActivePen || 'OFF';
+
+            dock.innerHTML = `
+                <div class="dudu-vlabel">SOẠN</div>
+                <button class="dudu-vbtn" data-cmd="bold" title="In đậm (Bold)"><b>B</b></button>
+                <button class="dudu-vbtn" data-cmd="italic" title="In nghiêng (Italic)"><i>I</i></button>
+                <button class="dudu-vbtn" data-cmd="underline" title="Gạch chân (Underline)"><u>U</u></button>
+                <button class="dudu-vbtn" data-cmd="h2" title="Tiêu đề lớn">H2</button>
+                <button class="dudu-vbtn" data-cmd="bullet" title="Danh sách gạch đầu dòng">•≡</button>
+                <button class="dudu-vbtn" data-cmd="image" title="Chèn hình ảnh ngay tại vị trí con trỏ">🖼️</button>
+                <div class="dudu-vsep"></div>
+                <div class="dudu-vlabel">BÚT TÔ</div>
+                <button class="dudu-vbtn pen-btn" data-pen="#FFF59D" style="background:#FFF59D !important;color:#111 !important;" title="Cầm Bút Vàng (Chọn rồi quét chữ để tô)">🟨</button>
+                <button class="dudu-vbtn pen-btn" data-pen="#C8E6C9" style="background:#C8E6C9 !important;color:#111 !important;" title="Cầm Bút Xanh lá (Chọn rồi quét chữ để tô)">🟩</button>
+                <button class="dudu-vbtn pen-btn" data-pen="#BBDEFB" style="background:#BBDEFB !important;color:#111 !important;" title="Cầm Bút Xanh dương (Chọn rồi quét chữ để tô)">🟦</button>
+                <button class="dudu-vbtn pen-btn" data-pen="#F8BBD0" style="background:#F8BBD0 !important;color:#111 !important;" title="Cầm Bút Hồng (Chọn rồi quét chữ để tô)">🩷</button>
+                <button class="dudu-vbtn pen-btn" data-pen="ERASE" title="Cục tẩy (Quét qua chữ để xóa màu tô)">🧹</button>
+                <button class="dudu-vbtn pen-btn active-pen" data-pen="OFF" title="Tắt bút tô (Chế độ gõ chữ thường)">🚫</button>
+                <div class="dudu-vsep"></div>
+                <button class="dudu-vbtn" data-cmd="save" style="background:#38B2AC !important;color:#FFF !important;" title="Lưu nhanh bài viết">💾</button>
+            `;
+
+            // Xử lý sự kiện bấm trên Thanh công cụ dọc
+            dock.querySelectorAll('.dudu-vbtn').forEach((btn) => {
+                btn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const ctx = getActiveQuillContext();
+                    if (!ctx) return;
+                    const { idoc, editor, toolbar } = ctx;
+
+                    const penVal = btn.getAttribute('data-pen');
+                    if (penVal) {
+                        pDoc._duduActivePen = penVal;
+                        dock.querySelectorAll('.pen-btn').forEach(b => b.classList.remove('active-pen'));
+                        btn.classList.add('active-pen');
+
+                        // Nếu người dùng đang bôi đen sẵn 1 đoạn chữ rồi mới bấm nút màu bút thì tô luôn đoạn đó!
+                        try {
+                            const sel = idoc.getSelection();
+                            if (sel && !sel.isCollapsed && sel.toString().trim().length > 0 && penVal !== 'OFF') {
+                                idoc.execCommand('styleWithCSS', false, true);
+                                if (penVal === 'ERASE') {
+                                    idoc.execCommand('hiliteColor', false, 'transparent');
+                                    idoc.execCommand('backColor', false, 'transparent');
+                                    idoc.execCommand('removeFormat', false, null);
+                                } else {
+                                    idoc.execCommand('hiliteColor', false, penVal);
+                                    idoc.execCommand('foreColor', false, '#111827');
+                                }
+                                editor.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                        } catch (err) {}
+                        return;
+                    }
+
+                    const cmd = btn.getAttribute('data-cmd');
+                    editor.focus();
+                    if (cmd === 'bold' || cmd === 'italic' || cmd === 'underline') {
+                        idoc.execCommand(cmd, false, null);
+                    } else if (cmd === 'h2') {
+                        const hBtn = toolbar.querySelector('.ql-header');
+                        if (hBtn) hBtn.click();
+                        else idoc.execCommand('formatBlock', false, 'H2');
+                    } else if (cmd === 'bullet') {
+                        const bBtn = toolbar.querySelector('.ql-list[value="bullet"]');
+                        if (bBtn) bBtn.click();
+                        else idoc.execCommand('insertUnorderedList', false, null);
+                    } else if (cmd === 'image') {
+                        const imgBtn = toolbar.querySelector('.ql-image');
+                        if (imgBtn) imgBtn.click();
+                    } else if (cmd === 'save') {
+                        // Tìm và bấm nút Lưu bài viết trên giao diện Streamlit
+                        const allBtns = pDoc.querySelectorAll('button');
+                        for (const sbBtn of allBtns) {
+                            if (sbBtn.innerText && sbBtn.innerText.includes('Lưu thay đổi bài viết')) {
+                                sbBtn.click();
+                                break;
+                            }
+                        }
+                    }
+                    editor.dispatchEvent(new Event('input', { bubbles: true }));
+                    setTimeout(autoResizeQuillIframe, 100);
+                };
+            });
+
+            autoResizeQuillIframe();
+            setTimeout(autoResizeQuillIframe, 400);
+            setTimeout(autoResizeQuillIframe, 1000);
+            if (!window.parent._duduResizeTimer) {
+                window.parent._duduResizeTimer = setInterval(autoResizeQuillIframe, 1200);
+            }
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+def hide_floating_vertical_toolbar():
+    """Ẩn thanh công cụ dọc khi thoát chế độ chỉnh sửa bài viết"""
+    components.html(
+        """
+        <script>
+        try {
+            const dock = window.parent.document.getElementById('dudu-vertical-dock');
+            if (dock) dock.style.display = 'none';
+        } catch (e) {}
         </script>
         """,
         height=0,
@@ -990,7 +1176,7 @@ st.markdown(f"""
         color: #FFFFFF !important;
     }}
 
-    .block-container {{ padding-top: 1.8rem !important; }}
+    .block-container {{ padding-top: 1.8rem !important; padding-left: 4.5rem !important; }}
     
     .stApp p, .stApp li, .stApp label, .stMarkdown {{ color: {text_main} !important; line-height: 1.76 !important; margin-bottom: 0.8rem !important; }}
     .stApp h1, .stApp h2, .stApp h3, .stApp h4 {{ color: {text_main} !important; margin-top: 1.5rem !important; margin-bottom: 0.8rem !important; }}
@@ -1013,16 +1199,11 @@ st.markdown(f"""
     [data-testid="stExpander"], [data-testid="stMetric"] {{ background-color: transparent !important; border: 1px solid {border_col} !important; border-radius: 10px !important; margin-bottom: 10px !important; }}
     .element-container:has(> div:empty) {{ display: none !important; }}
 
-    /* Ghim thanh công cụ Quill trượt theo bài viết khi cuộn */
     .ql-toolbar {{
-        position: sticky !important;
-        top: 0 !important;
-        z-index: 9999 !important;
         background-color: #F8FAFC !important;
         border: 1px solid {border_col} !important;
         border-radius: 10px 10px 0 0 !important;
         padding: 8px !important;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.08) !important;
     }}
     .ql-container {{
         border: 1px solid {border_col} !important;
@@ -1030,10 +1211,8 @@ st.markdown(f"""
         font-family: 'Inter', sans-serif !important;
         font-size: 1.02rem !important;
         background-color: {input_bg} !important;
-        max-height: 68vh !important;
-        overflow-y: auto !important;
     }}
-    .ql-editor {{ color: {text_main} !important; min-height: 400px !important; line-height: 1.75 !important; }}
+    .ql-editor {{ color: {text_main} !important; min-height: 500px !important; line-height: 1.75 !important; }}
     .ql-editor img, .stMarkdown img {{ max-width: 100% !important; height: auto !important; border-radius: 8px !important; margin: 12px 0 !important; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }}
 
     [data-testid="stBottom"], [data-testid="stBottom"] > div, [data-testid="stBottomBlockContainer"] {{
@@ -1136,6 +1315,8 @@ with st.sidebar:
 
 # ==================== 7. NỘI DUNG TỪNG CHUYÊN MỤC ====================
 page = st.session_state.current_page
+if page != "Kho bài viết":
+    hide_floating_vertical_toolbar()
 
 if page == "Hỏi đáp":
     c_opt1, c_opt2, c_opt3 = st.columns([2.2, 1.8, 1])
@@ -1317,6 +1498,7 @@ elif page == "Kho bài viết":
             save_to_library("Tự soạn", "Bài ghi chép mới", "<p>Nhập nội dung ghi chép tại đây...</p>", tags=["ghi chép"])
             st.rerun()
 
+    any_editing_active = False
     if not st.session_state.library:
         st.info("Kho lưu trữ hiện đang trống. Hãy lưu bài từ mục Hỏi đáp, Bảng tin hoặc bấm 'Tạo bài viết trống mới'.")
     else:
@@ -1336,25 +1518,10 @@ elif page == "Kho bài viết":
                     if st.button("🗑️ Xóa", key=f"d_{iid}_{idx}", use_container_width=True): delete_from_library(iid); st.rerun()
 
                 if is_edit:
+                    any_editing_active = True
+                    st.info("👈 **Thanh công cụ dọc (Vertical Dock)** đã xuất hiện cố định ở mép trái màn hình! Khi bạn kéo bài viết xuống tới đâu, thanh công cụ sẽ trượt theo tới đó. Bấm chọn màu **Bút Tô (🟨, 🟩, 🟦, 🩷)** trên thanh dọc rồi dùng chuột quét qua chữ để tô màu tự động!")
                     new_t = st.text_input("Tiêu đề bài viết:", value=title, key=f"et_{iid}_{idx}")
                     new_tags = st.text_input("Tags (phân cách bằng dấu phẩy):", value=", ".join(tags), key=f"etg_{iid}_{idx}")
-
-                    # NÂNG CẤP 2: Chế độ cầm Bút Dạ Quang (Bấm chọn bút trước -> Quét chuột tới đâu tự động tô màu tới đó)
-                    pen_options = {
-                        "🚫 Tắt bút (Gõ chữ thường)": "OFF",
-                        "🟨 Bút Vàng": "#FFF59D",
-                        "🟩 Bút Xanh lá": "#C8E6C9",
-                        "🟦 Bút Xanh dương": "#BBDEFB",
-                        "🩷 Bút Hồng": "#F8BBD0",
-                        "🧹 Cục tẩy (Xóa màu tô)": "ERASE"
-                    }
-                    selected_pen_label = st.radio(
-                        "🖍️ **Chế độ Bút Highlight nhanh** (Chọn màu bút rồi dùng chuột bôi đen đoạn chữ để tự động tô màu ngay):",
-                        list(pen_options.keys()),
-                        horizontal=True,
-                        key=f"pen_mode_{iid}_{idx}"
-                    )
-                    active_pen_hex = pen_options[selected_pen_label]
 
                     try:
                         import markdown
@@ -1368,8 +1535,8 @@ elif page == "Kho bài viết":
                             toolbar=WORD_LIKE_TOOLBAR,
                             key=f"quill_{iid}_{idx}"
                         )
-                        # Kích hoạt Sticky Toolbar trượt theo bài viết + Bút Highlight tự động
-                        inject_sticky_toolbar_and_highlighter_js(active_pen_hex)
+                        # Kích hoạt Thanh công cụ dọc nằm ngoài bài viết + Mở rộng khung bài viết full chiều cao
+                        inject_floating_vertical_toolbar()
 
                         if st.button("💾 Lưu thay đổi bài viết", key=f"sv_{iid}_{idx}", type="primary", use_container_width=True):
                             saved_body = new_c_html if (new_c_html and len(new_c_html.strip()) > 0) else html_content
@@ -1377,7 +1544,7 @@ elif page == "Kho bài viết":
                             st.rerun()
                     except Exception as e:
                         st.warning(f"Đang dùng trình sửa văn bản dự phòng: {e}")
-                        new_c = st.text_area("Nội dung:", value=clean_cite_spans_for_storage(content), height=350, key=f"ec_{iid}_{idx}")
+                        new_c = st.text_area("Nội dung:", value=clean_cite_spans_for_storage(content), height=450, key=f"ec_{iid}_{idx}")
                         if st.button("💾 Lưu thay đổi", key=f"sv_fb_{iid}_{idx}", type="primary"):
                             update_library_item(iid, new_t, new_c, tags=[t.strip() for t in new_tags.split(",") if t.strip()])
                             st.rerun()
@@ -1391,6 +1558,9 @@ elif page == "Kho bài viết":
 
                     lib_q_state = st.session_state.lib_quizzes.setdefault(iid, {"end_quiz": None, "end_quiz_submitted": False})
                     render_end_of_article_quiz_widget(title, clean_view, lib_q_state, f"lib_q_{iid}_{idx}")
+
+    if not any_editing_active:
+        hide_floating_vertical_toolbar()
 
 elif page == "Trực Cấp cứu":
     er_books = get_thct_emergency_books(all_books_in_db, st.session_state.get("_books", all_books_in_db))
