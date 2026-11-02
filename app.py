@@ -360,15 +360,15 @@ def smart_route_pages(query, books, max_pages=12):
     return routed, [(bk, p) for bk, p, _ in combined], [(bk, p) for bk, p, _ in combined][:2]
 
 @st.cache_data(max_entries=40, show_spinner=False)
-def get_page_image(fpath, page_index, zoom=1.2):
+def get_page_image(fpath, page_index, zoom=1.15):
     if not os.path.exists(fpath): return None
     try:
         doc = fitz.open(fpath)
-        img_bytes = doc.load_page(page_index).get_pixmap(matrix=fitz.Matrix(zoom, zoom)).tobytes("png")
+        # Dùng JPEG thay vì PNG giúp giảm 80% dung lượng ảnh gửi cho AI nhưng vẫn sắc nét
+        img_bytes = doc.load_page(page_index).get_pixmap(matrix=fitz.Matrix(zoom, zoom)).tobytes("jpeg")
         doc.close()
         return img_bytes
     except Exception: return None
-
 # ==================== 3. KHỞI TẠO STATE BỀN VỮNG ====================
 _saved_active = load_json_file(ACTIVE_SESSIONS_FILE, {})
 
@@ -549,9 +549,10 @@ def stream_ai_response(prompt_text, visual_page_keys=None):
     client = genai.Client(api_key=k)
     contents = []
     if visual_page_keys:
-        for (fname, p_num) in visual_page_keys[:2]:
-            img_b = get_page_image(os.path.join(PDF_DIR, fname), p_num - 1, zoom=1.1)
-            if img_b: contents.append(types.Part.from_bytes(data=img_b, mime_type="image/png"))
+        # Gửi 1 trang ảnh JPEG trọng tâm nhất (zoom=0.95) để AI đọc hình siêu tốc
+        for (fname, p_num) in visual_page_keys[:1]:
+            img_b = get_page_image(os.path.join(PDF_DIR, fname), p_num - 1, zoom=0.95)
+            if img_b: contents.append(types.Part.from_bytes(data=img_b, mime_type="image/jpeg"))
     contents.append(prompt_text)
 
     placeholder = st.empty()
@@ -560,6 +561,16 @@ def stream_ai_response(prompt_text, visual_page_keys=None):
     full_text = ""
     last_err = None
 
+    # Cấu hình tắt chế độ chờ Thinking lâu của dòng Flash để chữ hiện ra ngay lập tức
+    try:
+        gen_config = types.GenerateContentConfig(
+            temperature=0.35,
+            max_output_tokens=8192,
+            thinking_config=types.ThinkingConfig(thinking_budget=0)
+        )
+    except Exception:
+        gen_config = types.GenerateContentConfig(temperature=0.35, max_output_tokens=8192)
+
     for model_name in _get_fallback_models():
         for attempt in range(2):
             try:
@@ -567,7 +578,7 @@ def stream_ai_response(prompt_text, visual_page_keys=None):
                 for chunk in client.models.generate_content_stream(
                     model=model_name,
                     contents=contents,
-                    config=types.GenerateContentConfig(temperature=0.35, max_output_tokens=8192)
+                    config=gen_config
                 ):
                     if chunk.text:
                         full_text += chunk.text
@@ -582,11 +593,14 @@ def stream_ai_response(prompt_text, visual_page_keys=None):
                     placeholder.empty()
                     st.error("❌ Lỗi xác thực API Key (401). Hãy kiểm tra lại khóa API ở cột bên trái.")
                     st.stop()
+                # Nếu model không hỗ trợ tham số thinking_config thì tự động gọi lại cấu hình chuẩn
+                if "thinking" in err_str.lower():
+                    gen_config = types.GenerateContentConfig(temperature=0.35, max_output_tokens=8192)
                 if len(full_text) > 400:
                     placeholder.empty()
                     return full_text
-                placeholder.info(f"⏳ **Máy chủ {model_name} đang bận, đang tự động chuyển luồng xử lý dự phòng (Lần thử {attempt+1})...**")
-                time.sleep(1.5 * (attempt + 1))
+                placeholder.info(f"⏳ **Máy chủ {model_name} đang bận, đang chuyển luồng xử lý nhanh (Lần thử {attempt+1})...**")
+                time.sleep(0.8)
 
         try:
             res = client.models.generate_content(
@@ -602,7 +616,7 @@ def stream_ai_response(prompt_text, visual_page_keys=None):
             continue
 
     placeholder.empty()
-    st.error(f"⚠️ Máy chủ Google Gemini hiện đang quá tải (ServerError 503). Vui lòng bấm gửi lại câu hỏi sau vài giây! ({last_err})")
+    st.error(f"⚠️ Máy chủ Google Gemini hiện đang quá tải. Vui lòng bấm gửi lại câu hỏi sau vài giây! ({last_err})")
     st.stop()
 
 @st.cache_data(max_entries=100, show_spinner=False)
