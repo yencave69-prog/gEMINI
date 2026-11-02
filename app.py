@@ -1742,10 +1742,10 @@ E. [...]
                     st.markdown(m["question"])
                     for o in m.get("options", []): st.markdown(f"- {o}")
                     st.markdown(format_small_citations(f"**Đáp án đúng: {m['answer']}**\n\n{m.get('explanation', '')}"), unsafe_allow_html=True)
-                   if st.button("Xóa khỏi sổ tay", key=f"dms_{i}"): 
-    st.session_state.mistakes = [x for x in st.session_state.mistakes if x.get("id") != m.get("id")]
-    save_json_file(MISTAKES_FILE, st.session_state.mistakes)
-    st.rerun()
+                  if st.button("Xóa khỏi sổ tay", key=f"dms_{i}"):
+                        st.session_state.mistakes = [x for x in st.session_state.mistakes if x.get("id") != m.get("id")]
+                        save_json_file(MISTAKES_FILE, st.session_state.mistakes)
+                        st.rerun()
 
     with t3:
         if not due_list: st.success("Hôm nay không có câu hỏi nào đến hạn ôn tập SRS.")
