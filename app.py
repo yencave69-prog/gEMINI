@@ -391,6 +391,7 @@ _defaults = {
     "current_page": lambda: "Hỏi đáp",
     "translated_pages_cache": dict,
     "lib_quizzes": dict,
+    "qa_vis_toggle": lambda: True,  # Mặc định LUÔN BẬT Đính kèm ảnh cho AI
 }
 for k, factory in _defaults.items():
     if k not in st.session_state: st.session_state[k] = factory()
@@ -495,7 +496,7 @@ def create_pptx_bytes(topic_title, raw_slide_text):
     buf = io.BytesIO(); prs.save(buf); buf.seek(0)
     return buf.getvalue()
 
-# ==================== 4. AI ENGINE & CẤU TRÚC BÀI SOẠN 8 PHẦN (CÓ MỤC HẬU PHẪU) ====================
+# ==================== 4. AI ENGINE & CẤU TRÚC BÀI SOẠN 8 PHẦN (CÓ MỤU HẬU PHẪU) ====================
 @st.cache_data(ttl=3600, show_spinner=False)
 def scan_available_models(active_key: str):
     fallback = ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-pro-latest"]
@@ -832,9 +833,8 @@ D. [...]
 
 def inject_floating_vertical_toolbar():
     """
-    Tạo Thanh Công Cụ Dọc (Vertical Floating Dock) nằm cố định bên trái,
-    nằm ngoài khung bài viết, luôn trượt theo con lăn chuột của trang web
-    và tự động mở rộng chiều cao khung viết bài hết cỡ.
+    Chỉ hiển thị Thanh Công Cụ Dọc khi đang mở trình sửa bài viết ở Kho bài viết.
+    Tự động gỡ bỏ hoàn toàn (remove) ngay khi người dùng đóng bài viết hoặc chuyển sang tab khác.
     """
     components.html(
         """
@@ -842,81 +842,56 @@ def inject_floating_vertical_toolbar():
         (function() {
             const pDoc = window.parent.document;
 
-            // 1. Tạo CSS cho Thanh công cụ dọc cố định bên trái (nằm ngoài bài viết)
             if (!pDoc.getElementById('dudu-vtoolbar-style')) {
                 const st = pDoc.createElement('style');
                 st.id = 'dudu-vtoolbar-style';
                 st.innerHTML = `
                     #dudu-vertical-dock {
-                        position: fixed !important;
-                        top: 50% !important;
-                        transform: translateY(-50%) !important;
-                        left: 265px !important;
-                        z-index: 999998 !important;
-                        background: #1B2733 !important;
-                        border: 1.5px solid #38B2AC !important;
-                        border-radius: 14px !important;
-                        padding: 8px 6px !important;
-                        display: flex !important;
-                        flex-direction: column !important;
-                        gap: 5px !important;
-                        box-shadow: 0 8px 24px rgba(0,0,0,0.45) !important;
-                        width: 52px !important;
-                        align-items: center !important;
-                        transition: left 0.2s ease !important;
+                        position: fixed;
+                        top: 50%;
+                        transform: translateY(-50%);
+                        left: 265px;
+                        z-index: 999998;
+                        background: #1B2733;
+                        border: 1.5px solid #38B2AC;
+                        border-radius: 14px;
+                        padding: 8px 6px;
+                        display: flex;
+                        flex-direction: column;
+                        gap: 5px;
+                        box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+                        width: 52px;
+                        align-items: center;
+                        transition: left 0.2s ease;
                     }
                     @media (max-width: 900px) {
-                        #dudu-vertical-dock {
-                            left: 10px !important;
-                        }
+                        #dudu-vertical-dock { left: 10px; }
                     }
                     .dudu-vbtn {
-                        width: 38px !important;
-                        height: 34px !important;
-                        border-radius: 8px !important;
-                        border: 1px solid #2C3E50 !important;
-                        background: #131C26 !important;
-                        color: #ECF2F8 !important;
-                        font-weight: 700 !important;
-                        font-size: 13px !important;
-                        cursor: pointer !important;
-                        display: flex !important;
-                        align-items: center !important;
-                        justify-content: center !important;
-                        transition: all 0.15s ease !important;
-                        padding: 0 !important;
+                        width: 38px; height: 34px; border-radius: 8px;
+                        border: 1px solid #2C3E50; background: #131C26;
+                        color: #ECF2F8; font-weight: 700; font-size: 13px;
+                        cursor: pointer; display: flex; align-items: center;
+                        justify-content: center; transition: all 0.15s ease; padding: 0;
                     }
-                    .dudu-vbtn:hover {
-                        border-color: #38B2AC !important;
-                        transform: scale(1.07) !important;
-                    }
+                    .dudu-vbtn:hover { border-color: #38B2AC; transform: scale(1.07); }
                     .dudu-vbtn.active-pen {
                         border: 2.5px solid #38B2AC !important;
                         box-shadow: 0 0 10px rgba(56, 178, 172, 0.7) !important;
                         transform: scale(1.08) !important;
                     }
-                    .dudu-vsep {
-                        width: 32px !important;
-                        height: 1px !important;
-                        background: #2C3E50 !important;
-                        margin: 2px 0 !important;
-                    }
-                    .dudu-vlabel {
-                        font-size: 9px !important;
-                        color: #9FB3C8 !important;
-                        text-align: center !important;
-                        font-weight: 600 !important;
-                        letter-spacing: 0.3px !important;
-                    }
+                    .dudu-vsep { width: 32px; height: 1px; background: #2C3E50; margin: 2px 0; }
+                    .dudu-vlabel { font-size: 9px; color: #9FB3C8; text-align: center; font-weight: 600; }
                 `;
                 pDoc.head.appendChild(st);
             }
 
-            // 2. Hàm tìm iframe của Quill Editor đang mở và tự động bung chiều cao hết cỡ
             function getActiveQuillContext() {
                 const iframes = pDoc.querySelectorAll('iframe');
                 for (const ifr of iframes) {
                     try {
+                        const rect = ifr.getBoundingClientRect();
+                        if (rect.width === 0 || rect.height === 0 || ifr.offsetParent === null) continue;
                         const idoc = ifr.contentDocument || ifr.contentWindow.document;
                         if (!idoc) continue;
                         const editor = idoc.querySelector('.ql-editor');
@@ -933,12 +908,11 @@ def inject_floating_vertical_toolbar():
                 const ctx = getActiveQuillContext();
                 const existingDock = pDoc.getElementById('dudu-vertical-dock');
                 if (!ctx) {
-                    if (existingDock) existingDock.style.display = 'none';
+                    if (existingDock) existingDock.remove();
                     return;
                 }
                 if (existingDock) existingDock.style.display = 'flex';
 
-                // Điều chỉnh vị trí left của thanh dọc nếu Sidebar đang thu gọn
                 const sb = pDoc.querySelector('[data-testid="stSidebar"]');
                 if (sb && existingDock) {
                     const sbRect = sb.getBoundingClientRect();
@@ -947,7 +921,6 @@ def inject_floating_vertical_toolbar():
                 }
 
                 const { ifr, idoc, editor } = ctx;
-                // Bung chiều cao khung soạn thảo để không bị thanh cuộn nhỏ xíu bên trong
                 if (!idoc.getElementById('dudu-fullheight-style')) {
                     const st2 = idoc.createElement('style');
                     st2.id = 'dudu-fullheight-style';
@@ -965,7 +938,6 @@ def inject_floating_vertical_toolbar():
                     if (ifr.parentElement) ifr.parentElement.style.height = contentH + 'px';
                 }
 
-                // Gắn sự kiện Bút Highlight cầm tay (bôi tới đâu tô màu tới đó)
                 if (!editor._duduPenBound) {
                     editor._duduPenBound = true;
                     const applyPenOnSelect = () => {
@@ -994,7 +966,6 @@ def inject_floating_vertical_toolbar():
                 }
             }
 
-            // 3. Khởi tạo Thanh Công Cụ Dọc cố định bên trái (nằm ngoài bài viết)
             let dock = pDoc.getElementById('dudu-vertical-dock');
             if (!dock) {
                 dock = pDoc.createElement('div');
@@ -1014,17 +985,16 @@ def inject_floating_vertical_toolbar():
                 <button class="dudu-vbtn" data-cmd="image" title="Chèn hình ảnh ngay tại vị trí con trỏ">🖼️</button>
                 <div class="dudu-vsep"></div>
                 <div class="dudu-vlabel">BÚT TÔ</div>
-                <button class="dudu-vbtn pen-btn" data-pen="#FFF59D" style="background:#FFF59D !important;color:#111 !important;" title="Cầm Bút Vàng (Chọn rồi quét chữ để tô)">🟨</button>
-                <button class="dudu-vbtn pen-btn" data-pen="#C8E6C9" style="background:#C8E6C9 !important;color:#111 !important;" title="Cầm Bút Xanh lá (Chọn rồi quét chữ để tô)">🟩</button>
-                <button class="dudu-vbtn pen-btn" data-pen="#BBDEFB" style="background:#BBDEFB !important;color:#111 !important;" title="Cầm Bút Xanh dương (Chọn rồi quét chữ để tô)">🟦</button>
-                <button class="dudu-vbtn pen-btn" data-pen="#F8BBD0" style="background:#F8BBD0 !important;color:#111 !important;" title="Cầm Bút Hồng (Chọn rồi quét chữ để tô)">🩷</button>
-                <button class="dudu-vbtn pen-btn" data-pen="ERASE" title="Cục tẩy (Quét qua chữ để xóa màu tô)">🧹</button>
-                <button class="dudu-vbtn pen-btn active-pen" data-pen="OFF" title="Tắt bút tô (Chế độ gõ chữ thường)">🚫</button>
+                <button class="dudu-vbtn pen-btn" data-pen="#FFF59D" style="background:#FFF59D !important;color:#111 !important;" title="Cầm Bút Vàng">🟨</button>
+                <button class="dudu-vbtn pen-btn" data-pen="#C8E6C9" style="background:#C8E6C9 !important;color:#111 !important;" title="Cầm Bút Xanh lá">🟩</button>
+                <button class="dudu-vbtn pen-btn" data-pen="#BBDEFB" style="background:#BBDEFB !important;color:#111 !important;" title="Cầm Bút Xanh dương">🟦</button>
+                <button class="dudu-vbtn pen-btn" data-pen="#F8BBD0" style="background:#F8BBD0 !important;color:#111 !important;" title="Cầm Bút Hồng">🩷</button>
+                <button class="dudu-vbtn pen-btn" data-pen="ERASE" title="Cục tẩy xóa màu tô">🧹</button>
+                <button class="dudu-vbtn pen-btn active-pen" data-pen="OFF" title="Tắt bút tô">🚫</button>
                 <div class="dudu-vsep"></div>
                 <button class="dudu-vbtn" data-cmd="save" style="background:#38B2AC !important;color:#FFF !important;" title="Lưu nhanh bài viết">💾</button>
             `;
 
-            // Xử lý sự kiện bấm trên Thanh công cụ dọc
             dock.querySelectorAll('.dudu-vbtn').forEach((btn) => {
                 btn.onclick = (e) => {
                     e.preventDefault();
@@ -1038,8 +1008,6 @@ def inject_floating_vertical_toolbar():
                         pDoc._duduActivePen = penVal;
                         dock.querySelectorAll('.pen-btn').forEach(b => b.classList.remove('active-pen'));
                         btn.classList.add('active-pen');
-
-                        // Nếu người dùng đang bôi đen sẵn 1 đoạn chữ rồi mới bấm nút màu bút thì tô luôn đoạn đó!
                         try {
                             const sel = idoc.getSelection();
                             if (sel && !sel.isCollapsed && sel.toString().trim().length > 0 && penVal !== 'OFF') {
@@ -1074,7 +1042,6 @@ def inject_floating_vertical_toolbar():
                         const imgBtn = toolbar.querySelector('.ql-image');
                         if (imgBtn) imgBtn.click();
                     } else if (cmd === 'save') {
-                        // Tìm và bấm nút Lưu bài viết trên giao diện Streamlit
                         const allBtns = pDoc.querySelectorAll('button');
                         for (const sbBtn of allBtns) {
                             if (sbBtn.innerText && sbBtn.innerText.includes('Lưu thay đổi bài viết')) {
@@ -1089,11 +1056,8 @@ def inject_floating_vertical_toolbar():
             });
 
             autoResizeQuillIframe();
-            setTimeout(autoResizeQuillIframe, 400);
-            setTimeout(autoResizeQuillIframe, 1000);
-            if (!window.parent._duduResizeTimer) {
-                window.parent._duduResizeTimer = setInterval(autoResizeQuillIframe, 1200);
-            }
+            if (window.parent._duduResizeTimer) clearInterval(window.parent._duduResizeTimer);
+            window.parent._duduResizeTimer = setInterval(autoResizeQuillIframe, 800);
         })();
         </script>
         """,
@@ -1101,13 +1065,17 @@ def inject_floating_vertical_toolbar():
     )
 
 def hide_floating_vertical_toolbar():
-    """Ẩn thanh công cụ dọc khi thoát chế độ chỉnh sửa bài viết"""
+    """Xóa hoàn toàn thanh công cụ dọc khỏi màn hình khi không ở chế độ chỉnh sửa"""
     components.html(
         """
         <script>
         try {
+            if (window.parent._duduResizeTimer) {
+                clearInterval(window.parent._duduResizeTimer);
+                window.parent._duduResizeTimer = null;
+            }
             const dock = window.parent.document.getElementById('dudu-vertical-dock');
-            if (dock) dock.style.display = 'none';
+            if (dock) dock.remove();
         } catch (e) {}
         </script>
         """,
@@ -1176,7 +1144,7 @@ st.markdown(f"""
         color: #FFFFFF !important;
     }}
 
-    .block-container {{ padding-top: 1.8rem !important; padding-left: 4.5rem !important; }}
+    .block-container {{ padding-top: 1.8rem !important; }}
     
     .stApp p, .stApp li, .stApp label, .stMarkdown {{ color: {text_main} !important; line-height: 1.76 !important; margin-bottom: 0.8rem !important; }}
     .stApp h1, .stApp h2, .stApp h3, .stApp h4 {{ color: {text_main} !important; margin-top: 1.5rem !important; margin-bottom: 0.8rem !important; }}
@@ -1321,7 +1289,8 @@ if page != "Kho bài viết":
 if page == "Hỏi đáp":
     c_opt1, c_opt2, c_opt3 = st.columns([2.2, 1.8, 1])
     with c_opt1: ans_mode = st.radio("Chế độ:", ["Tự động", "Giải thích", "Bài soạn"], horizontal=True, key="qa_mode")
-    with c_opt2: st.write(""); use_vision = st.toggle("Đính kèm ảnh cho AI", value=False, key="qa_vis_toggle")
+    # Đã đặt mặc định Đính kèm ảnh cho AI luôn BẬT (value=True)
+    with c_opt2: st.write(""); use_vision = st.toggle("Đính kèm ảnh cho AI", value=True, key="qa_vis_toggle")
     with c_opt3:
         st.write("")
         if st.button("Xóa phiên", key="qa_clr", use_container_width=True):
@@ -1519,7 +1488,7 @@ elif page == "Kho bài viết":
 
                 if is_edit:
                     any_editing_active = True
-                    st.info("👈 **Thanh công cụ dọc (Vertical Dock)** đã xuất hiện cố định ở mép trái màn hình! Khi bạn kéo bài viết xuống tới đâu, thanh công cụ sẽ trượt theo tới đó. Bấm chọn màu **Bút Tô (🟨, 🟩, 🟦, 🩷)** trên thanh dọc rồi dùng chuột quét qua chữ để tô màu tự động!")
+                    st.info("👈 **Thanh công cụ dọc** đã xuất hiện bên trái! Kéo bài viết tới đâu thanh công cụ sẽ trượt theo tới đó. Chọn **Bút Tô (🟨, 🟩, 🟦, 🩷)** trên thanh dọc rồi quét chuột qua chữ để tô màu tự động!")
                     new_t = st.text_input("Tiêu đề bài viết:", value=title, key=f"et_{iid}_{idx}")
                     new_tags = st.text_input("Tags (phân cách bằng dấu phẩy):", value=", ".join(tags), key=f"etg_{iid}_{idx}")
 
@@ -1535,7 +1504,6 @@ elif page == "Kho bài viết":
                             toolbar=WORD_LIKE_TOOLBAR,
                             key=f"quill_{iid}_{idx}"
                         )
-                        # Kích hoạt Thanh công cụ dọc nằm ngoài bài viết + Mở rộng khung bài viết full chiều cao
                         inject_floating_vertical_toolbar()
 
                         if st.button("💾 Lưu thay đổi bài viết", key=f"sv_{iid}_{idx}", type="primary", use_container_width=True):
