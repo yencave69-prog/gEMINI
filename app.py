@@ -386,7 +386,7 @@ _defaults = {
     "xray_session": lambda: None,
     "interactive_quiz": lambda: None,
     "slide_session": lambda: None,
-    "selected_model": lambda: "gemini-2.0-flash", # Mặc định siêu tốc
+    "selected_model": lambda: "gemini-flash-lite-latest",
     "_books": lambda: list(all_books_in_db),
     "current_page": lambda: "Hỏi đáp",
     "translated_pages_cache": dict,
@@ -496,17 +496,52 @@ def create_pptx_bytes(topic_title, raw_slide_text):
     return buf.getvalue()
 
 # ==================== 4. AI ENGINE SIÊU TỐC ====================
+DEFAULT_MODEL = "gemini-flash-lite-latest"
+# Các model Google đã tắt hẳn -> tuyệt đối không gọi (gọi sẽ lỗi + mất thời gian thử lại)
+_RETIRED_PREFIXES = ("gemini-2.0",)
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def scan_available_models(active_key: str):
-    fast_models = ["gemini-2.0-flash", "gemini-flash-lite-latest", "gemini-flash-latest"]
-    if not active_key: return fast_models, False
-    return fast_models, True
+    fallback = ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-pro-latest"]
+    if not active_key: return fallback, False
+    try:
+        models = [
+            m.name.replace("models/", "")
+            for m in genai.Client(api_key=active_key).models.list()
+            if "latest" in m.name.lower()
+            and ("gemini" in m.name.lower() or "gemma" in m.name.lower())
+            and not any(ex in m.name.lower() for ex in ["2.0", "2.5", "embedding", "imagen", "veo", "audio", "tts", "aqa", "learnlm", "robotics"])
+        ]
+        if not models: return fallback, True
+        models = sorted(set(models), key=lambda n: (0 if n.lower() == DEFAULT_MODEL else 1 if n.lower() == "gemini-flash-latest" else 2 if "flash" in n.lower() else 3, n))
+        if DEFAULT_MODEL not in models: models.insert(0, DEFAULT_MODEL)
+        return models, True
+    except Exception:
+        return fallback, False
 
 def _get_fallback_models():
-    primary = st.session_state.get("selected_model", "gemini-2.0-flash")
-    candidates = [primary, "gemini-2.0-flash", "gemini-flash-lite-latest", "gemini-flash-latest"]
+    primary = st.session_state.get("selected_model", DEFAULT_MODEL)
+    if primary.lower().startswith(_RETIRED_PREFIXES): primary = DEFAULT_MODEL
+    candidates = [primary, "gemini-flash-lite-latest", "gemini-flash-latest"]
     seen = set()
     return [m for m in candidates if not (m in seen or seen.add(m))]
+
+def build_gen_config(model_name: str, with_thinking: bool = True, level: str = "minimal", max_tokens: int = 6000):
+    """Cấu hình đúng theo dòng model: 2.5 dùng thinking_budget, 3.x (các bản *-latest) dùng thinking_level.
+    Không đặt temperature vì Gemini 3 khuyến nghị giữ mặc định."""
+    kwargs = {"max_output_tokens": max_tokens}
+    n = model_name.lower()
+    if with_thinking and "gemma" not in n:
+        if "2.5" in n:
+            kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        elif "pro" in n:
+            kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="low")  # Pro không có mức minimal
+        else:
+            kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=level)
+    return types.GenerateContentConfig(**kwargs)
+
+def _is_auth_error(err_str: str) -> bool:
+    return "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str
 
 def generate_ai_response(prompt_text):
     k = get_active_api_key()
@@ -517,20 +552,23 @@ def generate_ai_response(prompt_text):
     last_err = None
     with st.spinner("⏳ Đang xử lý dữ liệu với AI..."):
         for model_name in _get_fallback_models():
-            for attempt in range(2):
+            for with_thinking in (True, False):  # lần 2: bỏ thinking_config nếu model từ chối
                 try:
                     return client.models.generate_content(
                         model=model_name,
                         contents=prompt_text,
-                        config=types.GenerateContentConfig(temperature=0.3, max_output_tokens=6000)
+                        config=build_gen_config(model_name, with_thinking, level="low")
                     )
                 except Exception as e:
                     last_err = e
                     err_str = str(e)
-                    if "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str:
+                    if _is_auth_error(err_str):
                         st.error("❌ Lỗi xác thực API Key. Hãy kiểm tra lại khóa API ở cột bên trái.")
                         st.stop()
-                    time.sleep(0.8 * (attempt + 1))
+                    if with_thinking and "thinking" in err_str.lower():
+                        continue
+                    time.sleep(0.8)
+                    break
     st.error(f"⚠️ Máy chủ AI đang quá tải. Vui lòng thử lại! ({last_err})")
     st.stop()
 
@@ -544,73 +582,56 @@ def stream_ai_response(prompt_text, visual_page_keys=None, query_text=""):
 
     need_vision = any(w in query_text.lower() for w in ["hình", "ảnh", "x-quang", "xquang", "phim", "ct", "mri", "sơ đồ", "dấu hiệu", "đường mổ", "góc"])
     if visual_page_keys and need_vision:
-         fname, p_num = visual_page_keys[0]
-         img_b = get_page_image(os.path.join(PDF_DIR, fname), p_num - 1, zoom=0.85)
-         if img_b:
-             contents.append(types.Part.from_bytes(data=img_b, mime_type="image/jpeg"))
+        fname, p_num = visual_page_keys[0]
+        img_b = get_page_image(os.path.join(PDF_DIR, fname), p_num - 1, zoom=0.85)
+        if img_b:
+            contents.append(types.Part.from_bytes(data=img_b, mime_type="image/jpeg"))
 
     contents.append(prompt_text)
 
     placeholder = st.empty()
     placeholder.info("⚡ **Đang kết nối siêu tốc với AI...**")
-    
-    full_text = ""
+
     last_err = None
 
-    try:
-        gen_config = types.GenerateContentConfig(
-            temperature=0.3,
-            max_output_tokens=6000,
-            thinking_config=types.ThinkingConfig(thinking_budget=0)
-        )
-    except Exception:
-        gen_config = types.GenerateContentConfig(temperature=0.3, max_output_tokens=6000)
-
     for model_name in _get_fallback_models():
-        try:
+        for with_thinking in (True, False):  # lần 2: cùng model nhưng bỏ thinking_config
             full_text = ""
-            last_render_time = 0
-            for chunk in client.models.generate_content_stream(
-                model=model_name,
-                contents=contents,
-                config=gen_config
-            ):
-                if chunk.text:
-                    full_text += chunk.text
-                    now = time.time()
-                    if now - last_render_time > 0.12:
-                        placeholder.markdown(format_small_citations(full_text + " ▌"), unsafe_allow_html=True)
-                        last_render_time = now
-            if full_text.strip():
-                placeholder.empty()
-                return full_text
-        except Exception as e:
-            last_err = e
-            err_str = str(e)
-            if "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str:
-                placeholder.empty()
-                st.error("❌ Lỗi xác thực API Key (401). Hãy kiểm tra lại khóa API ở cột bên trái.")
-                st.stop()
-            if "thinking" in err_str.lower():
-                gen_config = types.GenerateContentConfig(temperature=0.3, max_output_tokens=6000)
-                try:
-                    for chunk in client.models.generate_content_stream(model=model_name, contents=contents, config=gen_config):
-                        if chunk.text:
-                            full_text += chunk.text
+            last_render_time = 0.0
+            try:
+                for chunk in client.models.generate_content_stream(
+                    model=model_name,
+                    contents=contents,
+                    config=build_gen_config(model_name, with_thinking)
+                ):
+                    if chunk.text:
+                        full_text += chunk.text
+                        now = time.time()
+                        if now - last_render_time > 0.12:
                             placeholder.markdown(format_small_citations(full_text + " ▌"), unsafe_allow_html=True)
-                    if full_text.strip():
-                        placeholder.empty()
-                        return full_text
-                except Exception as e2:
-                    last_err = e2
-            if len(full_text) > 300:
-                placeholder.empty()
-                return full_text
-            continue
+                            last_render_time = now
+                if full_text.strip():
+                    placeholder.empty()
+                    return full_text
+                break  # model trả rỗng -> sang model kế tiếp
+            except Exception as e:
+                last_err = e
+                err_str = str(e)
+                if _is_auth_error(err_str):
+                    placeholder.empty()
+                    st.error("❌ Lỗi xác thực API Key (401). Hãy kiểm tra lại khóa API ở cột bên trái.")
+                    st.stop()
+                if len(full_text) > 300:  # đã nhận đủ nhiều thì giữ lại
+                    placeholder.empty()
+                    return full_text
+                if with_thinking and "thinking" in err_str.lower():
+                    continue
+                break
 
     placeholder.empty()
     st.error(f"⚠️ Máy chủ AI đang bận. Vui lòng thử lại! ({last_err})")
     st.stop()
+
 
 @st.cache_data(max_entries=100, show_spinner=False)
 def translate_to_vietnamese_cached(raw_text: str):
@@ -623,12 +644,12 @@ def translate_to_vietnamese_cached(raw_text: str):
             "rõ ràng, giữ nguyên các số hiệu hình ảnh (như Fig, Table) và cấu trúc đoạn. "
             "Chỉ trả về nội dung bản dịch Tiếng Việt, không thêm lời bình:\n\n" + raw_text[:4500]
         )
-        for m in ["gemini-2.0-flash", "gemini-flash-lite-latest"]:
+        for m in ["gemini-flash-lite-latest", "gemini-flash-latest"]:
             try:
                 res = client.models.generate_content(
                     model=m,
                     contents=prompt,
-                    config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=4096)
+                    config=build_gen_config(m, True, "minimal", 4096)
                 )
                 if res and res.text:
                     return res.text.strip()
@@ -1234,7 +1255,7 @@ with st.sidebar:
 
     avail_models, key_ok = scan_available_models(API_KEY)
     st.markdown("Mô hình AI:")
-    current_m = st.session_state.get("selected_model", "gemini-2.0-flash")
+    current_m = st.session_state.get("selected_model", "gemini-flash-lite-latest")
     cur_idx = avail_models.index(current_m) if current_m in avail_models else 0
     selected_m = st.selectbox("Mô hình AI", avail_models, index=cur_idx, label_visibility="collapsed")
     if selected_m != st.session_state.selected_model: st.session_state.selected_model = selected_m; st.rerun()
