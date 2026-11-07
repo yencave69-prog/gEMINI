@@ -220,7 +220,7 @@ def sync_from_gdrive_folder(force_clean=False):
 
     local_pdfs = [f for f in os.listdir(PDF_DIR) if f.lower().endswith(".pdf")]
     if force_clean or (not local_pdfs and not check_db_has_books()):
-        with st.spinner("⏳ Đang tải kho sách mới cập nhật từ Google Drive về máy chủ (chỉ mất khoảng 30-60 giây ở lần đầu)..."):
+        with st.spinner("⏳ Đang tải kho sách mới cập nhật từ Google Drive về máy chủ..."):
             try:
                 gdown.download_folder(url=folder_url, output=PDF_DIR, quiet=True, use_cookies=False)
             except Exception as e:
@@ -320,7 +320,7 @@ def get_page_data(fname, page_num):
     if not row: return None
     return {"text": row[0], "fpath": os.path.join(PDF_DIR, fname), "page_index": page_num - 1}
 
-def smart_route_pages(query, books, max_pages=8):
+def smart_route_pages(query, books, max_pages=6):
     if not books: return "", [], []
     explicit = [int(p) for p in re.findall(r'(?:trang|tr\.?)\s*(\d+)', query.lower())]
     explicit_hits = []
@@ -345,7 +345,7 @@ def smart_route_pages(query, books, max_pages=8):
         if not fts_hits and terms:
             placeholders = ",".join("?" * len(books))
             for t in terms[:3]:
-                cur = conn.execute(f"SELECT book, page, text FROM pages WHERE book IN ({placeholders}) AND text LIKE ? LIMIT ?", (*books, f"%{t}%", max_pages // 3))
+                cur = conn.execute(f"SELECT book, page, text FROM pages WHERE book IN ({placeholders}) AND text LIKE ? LIMIT ?", (*books, f"%{t}%", max_pages // 2))
                 fts_hits.extend([(r[0], r[1], r[2]) for r in cur.fetchall()])
 
     seen = set(); combined = []
@@ -356,11 +356,11 @@ def smart_route_pages(query, books, max_pages=8):
 
     if not combined: return "", [], []
     routed = "=== MỤC LỤC ĐỊNH HƯỚNG ===\n"
-    for bk, p, t in combined: routed += f"\n\n=== SÁCH: {bk} | TRANG {p} ===\n{t[:2800]}"
-    return routed, [(bk, p) for bk, p, _ in combined], [(bk, p) for bk, p, _ in combined][:2]
+    for bk, p, t in combined: routed += f"\n\n=== SÁCH: {bk} | TRANG {p} ===\n{t[:2500]}"
+    return routed, [(bk, p) for bk, p, _ in combined], [(bk, p) for bk, p, _ in combined][:1]
 
 @st.cache_data(max_entries=40, show_spinner=False)
-def get_page_image(fpath, page_index, zoom=1.15):
+def get_page_image(fpath, page_index, zoom=1.1):
     if not os.path.exists(fpath): return None
     try:
         doc = fitz.open(fpath)
@@ -386,12 +386,11 @@ _defaults = {
     "xray_session": lambda: None,
     "interactive_quiz": lambda: None,
     "slide_session": lambda: None,
-    "selected_model": lambda: "gemini-flash-latest",
+    "selected_model": lambda: "gemini-flash-lite-latest",
     "_books": lambda: list(all_books_in_db),
     "current_page": lambda: "Hỏi đáp",
     "translated_pages_cache": dict,
     "lib_quizzes": dict,
-    "qa_vis_toggle": lambda: True,
 }
 for k, factory in _defaults.items():
     if k not in st.session_state: st.session_state[k] = factory()
@@ -496,56 +495,49 @@ def create_pptx_bytes(topic_title, raw_slide_text):
     buf = io.BytesIO(); prs.save(buf); buf.seek(0)
     return buf.getvalue()
 
-# ==================== 4. AI ENGINE: CHỈ LẤY MODEL LATEST NHANH (LOẠI BỎ PRO & 1.5 CŨ) ====================
+# ==================== 4. AI ENGINE: CHỈ LẤY MODEL LATEST SIÊU TỐC ====================
 @st.cache_data(ttl=3600, show_spinner=False)
 def scan_available_models(active_key: str):
-    """Chỉ lấy các model có đuôi -latest dòng Flash (loại bỏ hoàn toàn dòng Pro chậm và các model 1.5 cũ)"""
-    default_latest = ["gemini-flash-latest", "gemini-flash-lite-latest"]
+    """Chỉ lấy các model đuôi -latest của dòng Flash (bỏ qua toàn bộ model pro và model cố định gây chậm/lỗi 404)"""
+    default_latest = ["gemini-flash-lite-latest", "gemini-flash-latest"]
     if not active_key:
         return default_latest, False
     try:
         client = genai.Client(api_key=active_key)
-        latest_models = []
+        valid_latest = []
         for m in client.models.list():
             name = m.name.replace("models/", "")
             low = name.lower()
-            if (
-                low.endswith("-latest")
-                and "flash" in low
-                and "pro" not in low
-                and not any(ex in low for ex in ["embedding", "imagen", "veo", "audio", "tts", "aqa", "learnlm", "robotics"])
-            ):
-                latest_models.append(name)
-        if not latest_models:
+            if "latest" in low and "flash" in low and "pro" not in low:
+                valid_latest.append(name)
+        if not valid_latest:
             return default_latest, True
-        latest_models = sorted(
-            list(set(latest_models)),
-            key=lambda n: (0 if n.lower() == "gemini-flash-latest" else 1 if n.lower() == "gemini-flash-lite-latest" else 2, n)
+        valid_latest = sorted(
+            list(set(valid_latest)),
+            key=lambda x: (0 if "lite" in x.lower() else 1, x)
         )
-        return latest_models, True
+        return valid_latest, True
     except Exception:
         return default_latest, False
 
 def _get_fallback_models():
-    """Chỉ dùng đúng các model -latest đang có trong danh sách, không trượt sang model 1.5 hay Pro"""
     avail, _ = scan_available_models(get_active_api_key())
-    primary = st.session_state.get("selected_model", "gemini-flash-latest")
-    if primary not in avail and avail:
-        primary = avail[0]
+    primary = st.session_state.get("selected_model", avail[0] if avail else "gemini-flash-lite-latest")
     candidates = [primary] + [m for m in avail if m != primary]
     seen = set()
     return [m for m in candidates if not (m in seen or seen.add(m))]
 
-def _build_fast_config(max_tokens=6000, temp=0.3):
-    """Tắt hoàn toàn thinking_budget để gemini-flash-latest phản hồi tức thì không bị trễ"""
-    try:
-        return types.GenerateContentConfig(
-            temperature=temp,
-            max_output_tokens=max_tokens,
-            thinking_config=types.ThinkingConfig(thinking_budget=0)
-        )
-    except Exception:
-        return types.GenerateContentConfig(temperature=temp, max_output_tokens=max_tokens)
+def _build_fast_config(temp=0.3, max_tok=6000, disable_thinking=True):
+    if disable_thinking:
+        try:
+            return types.GenerateContentConfig(
+                temperature=temp,
+                max_output_tokens=max_tok,
+                thinking_config=types.ThinkingConfig(thinking_budget=0)
+            )
+        except Exception:
+            pass
+    return types.GenerateContentConfig(temperature=temp, max_output_tokens=max_tok)
 
 def generate_ai_response(prompt_text):
     k = get_active_api_key()
@@ -556,29 +548,24 @@ def generate_ai_response(prompt_text):
     last_err = None
     with st.spinner("⏳ Đang xử lý dữ liệu với AI..."):
         for model_name in _get_fallback_models():
-            try:
-                return client.models.generate_content(
-                    model=model_name,
-                    contents=prompt_text,
-                    config=_build_fast_config(max_tokens=6000, temp=0.3)
-                )
-            except Exception as e:
-                last_err = e
-                err_str = str(e)
-                if "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str:
-                    st.error("❌ Lỗi xác thực API Key. Hãy kiểm tra lại khóa API ở cột bên trái.")
-                    st.stop()
-                if "thinking" in err_str.lower():
-                    try:
-                        return client.models.generate_content(
-                            model=model_name,
-                            contents=prompt_text,
-                            config=types.GenerateContentConfig(temperature=0.3, max_output_tokens=6000)
-                        )
-                    except Exception as e2:
-                        last_err = e2
-                continue
-    st.error(f"⚠️ Máy chủ AI đang bận tạm thời. Vui lòng bấm gửi lại! ({last_err})")
+            for disable_th in [True, False]:
+                try:
+                    cfg = _build_fast_config(0.3, 6000, disable_thinking=disable_th)
+                    return client.models.generate_content(
+                        model=model_name,
+                        contents=prompt_text,
+                        config=cfg
+                    )
+                except Exception as e:
+                    last_err = e
+                    err_str = str(e)
+                    if "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str:
+                        st.error("❌ Lỗi xác thực API Key. Hãy kiểm tra lại khóa API ở cột bên trái.")
+                        st.stop()
+                    if "thinking" in err_str.lower() and disable_th:
+                        continue
+                    break
+    st.error(f"⚠️ Máy chủ AI đang quá tải tạm thời. Vui lòng bấm gửi lại sau vài giây! ({last_err})")
     st.stop()
 
 def stream_ai_response(prompt_text, visual_page_keys=None, query_text=""):
@@ -589,63 +576,54 @@ def stream_ai_response(prompt_text, visual_page_keys=None, query_text=""):
     client = genai.Client(api_key=k)
     contents = []
 
-    need_vision = any(w in query_text.lower() for w in ["hình", "ảnh", "x-quang", "xquang", "phim", "ct", "mri", "sơ đồ", "dấu hiệu", "đường mổ", "góc"])
+    need_vision = any(w in query_text.lower() for w in ["hình", "ảnh", "x-quang", "xquang", "phim", "ct", "mri", "sơ đồ"])
     if visual_page_keys and need_vision:
         fname, p_num = visual_page_keys[0]
-        img_b = get_page_image(os.path.join(PDF_DIR, fname), p_num - 1, zoom=0.85)
+        img_b = get_page_image(os.path.join(PDF_DIR, fname), p_num - 1, zoom=0.8)
         if img_b:
             contents.append(types.Part.from_bytes(data=img_b, mime_type="image/jpeg"))
 
     contents.append(prompt_text)
 
     placeholder = st.empty()
-    placeholder.info("⚡ **Đang nhận câu trả lời trực tiếp từ AI...**")
+    placeholder.info("⚡ **Đang nhận phản hồi trực tiếp từ AI...**")
     
     full_text = ""
     last_err = None
-    gen_config = _build_fast_config(max_tokens=6000, temp=0.3)
 
     for model_name in _get_fallback_models():
-        try:
-            full_text = ""
-            last_render_time = 0
-            for chunk in client.models.generate_content_stream(
-                model=model_name,
-                contents=contents,
-                config=gen_config
-            ):
-                if chunk.text:
-                    full_text += chunk.text
-                    now = time.time()
-                    if now - last_render_time > 0.12:
-                        placeholder.markdown(format_small_citations(full_text + " ▌"), unsafe_allow_html=True)
-                        last_render_time = now
-            if full_text.strip():
-                placeholder.empty()
-                return full_text
-        except Exception as e:
-            last_err = e
-            err_str = str(e)
-            if "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str:
-                placeholder.empty()
-                st.error("❌ Lỗi xác thực API Key (401). Hãy kiểm tra lại khóa API ở cột bên trái.")
-                st.stop()
-            if "thinking" in err_str.lower():
-                fallback_cfg = types.GenerateContentConfig(temperature=0.3, max_output_tokens=6000)
-                try:
-                    for chunk in client.models.generate_content_stream(model=model_name, contents=contents, config=fallback_cfg):
-                        if chunk.text:
-                            full_text += chunk.text
+        for disable_th in [True, False]:
+            try:
+                cfg = _build_fast_config(0.3, 6000, disable_thinking=disable_th)
+                full_text = ""
+                last_render_time = 0
+                for chunk in client.models.generate_content_stream(
+                    model=model_name,
+                    contents=contents,
+                    config=cfg
+                ):
+                    if chunk.text:
+                        full_text += chunk.text
+                        now = time.time()
+                        if now - last_render_time > 0.12:
                             placeholder.markdown(format_small_citations(full_text + " ▌"), unsafe_allow_html=True)
-                    if full_text.strip():
-                        placeholder.empty()
-                        return full_text
-                except Exception as e2:
-                    last_err = e2
-            if len(full_text) > 300:
-                placeholder.empty()
-                return full_text
-            continue
+                            last_render_time = now
+                if full_text.strip():
+                    placeholder.empty()
+                    return full_text
+            except Exception as e:
+                last_err = e
+                err_str = str(e)
+                if "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str:
+                    placeholder.empty()
+                    st.error("❌ Lỗi xác thực API Key (401). Hãy kiểm tra lại khóa API ở cột bên trái.")
+                    st.stop()
+                if len(full_text) > 300:
+                    placeholder.empty()
+                    return full_text
+                if "thinking" in err_str.lower() and disable_th:
+                    continue
+                break
 
     placeholder.empty()
     st.error(f"⚠️ Máy chủ AI đang bận tạm thời. Vui lòng thử lại sau vài giây! ({last_err})")
@@ -667,7 +645,7 @@ def translate_to_vietnamese_cached(raw_text: str):
                 res = client.models.generate_content(
                     model=m,
                     contents=prompt,
-                    config=_build_fast_config(max_tokens=4096, temp=0.2)
+                    config=_build_fast_config(0.2, 4096, disable_thinking=True)
                 )
                 if res and res.text:
                     return res.text.strip()
@@ -1273,15 +1251,13 @@ with st.sidebar:
 
     avail_models, key_ok = scan_available_models(API_KEY)
     st.markdown("Mô hình AI (Latest):")
-    current_m = st.session_state.get("selected_model", "gemini-flash-latest")
+    current_m = st.session_state.get("selected_model", avail_models[0])
     if current_m not in avail_models:
         current_m = avail_models[0]
         st.session_state.selected_model = current_m
-    cur_idx = avail_models.index(current_m) if current_m in avail_models else 0
+    cur_idx = avail_models.index(current_m)
     selected_m = st.selectbox("Mô hình AI", avail_models, index=cur_idx, label_visibility="collapsed")
-    if selected_m != st.session_state.selected_model:
-        st.session_state.selected_model = selected_m
-        st.rerun()
+    if selected_m != st.session_state.selected_model: st.session_state.selected_model = selected_m; st.rerun()
 
     with st.expander("Cập nhật API Key", expanded=not key_ok):
         if not key_ok: st.caption("Khóa API lỗi 401 hoặc chưa nhập. Dán khóa API mới vào dưới đây:")
@@ -1366,8 +1342,8 @@ if page == "Hỏi đáp":
         books = st.session_state.get("_books", all_books_in_db)
         if not books: st.warning("Vui lòng chọn ít nhất 1 cuốn sách ở thanh bên trái.")
         else:
-            with st.spinner("⏳ Đang tra cứu giáo trình và biên soạn câu trả lời... (Vui lòng chờ trong giây lát)"):
-                ctx, matched, vis = smart_route_pages(query, books, max_pages=8)
+            with st.spinner("⏳ Đang tra cứu giáo trình và biên soạn câu trả lời..."):
+                ctx, matched, vis = smart_route_pages(query, books, max_pages=6)
                 q_low = query.lower()
                 is_specific = any(k in q_low for k in ["tại sao", "vì sao", "như thế nào", "khi nào", "bao lâu", "chỉ định", "biến chứng", "cơ chế", "là gì", "so sánh", "?"]) or len(q_low.split()) >= 6
                 use_8 = (ans_mode == "Bài soạn") or (ans_mode == "Tự động" and not is_specific)
@@ -1436,5 +1412,414 @@ TRÌNH BÀY DẠNG LIST CHO TỪNG Ý LỚN DƯỚI ĐÂY (TIÊU ĐỀ LỚN PH�
             mode = st.radio("Tương tác bổ sung:", ["Hỏi thêm", "Yêu cầu chỉnh sửa toàn bài"], horizontal=True)
             follow_q = st.text_input("Nhập nội dung hỏi thêm hoặc góp ý (Nhấn Enter để gửi):")
             if st.form_submit_button("Gửi yêu cầu") and follow_q.strip():
-                with st.spinner("⏳ Đang xử lý yêu cầu bổ sung... (Vui lòng chờ)"):
-                    extra_ctx, _, ex_vis = smart_route_pages(sess["query
+                with st.spinner("⏳ Đang xử lý yêu cầu bổ sung..."):
+                    extra_ctx, _, ex_vis = smart_route_pages(sess["query"] + " " + follow_q, st.session_state.get("_books", []), max_pages=6)
+                    if "chỉnh sửa" in mode.lower():
+                        sess["main_answer"] = stream_ai_response(f"TÀI LIỆU:\n{extra_ctx[:15000]}\nCHỦ ĐỀ: {sess['query']}\nBÀI CŨ: {sess['main_answer']}\nYÊU CẦU SỬA: {follow_q}\n{PEDAGOGICAL_STYLE_RULES}\n{ARTICLE_8_PART_TEMPLATE}\nViết lại toàn bài chi tiết kèm [Trang X].", ex_vis if use_vision else None, query_text=follow_q)
+                    else:
+                        ans_f = stream_ai_response(f"CHỦ ĐỀ GỐC: {sess['query']}\nTÀI LIỆU:\n{extra_ctx[:15000]}\nBÀI TRƯỚC:\n{sess['main_answer'][:4000]}\nYÊU CẦU: {follow_q}\n{PEDAGOGICAL_STYLE_RULES}\nGiải thích sâu sắc kèm [Trang X].", ex_vis if use_vision else None, query_text=follow_q)
+                        sess["discussions"].append({"type": "feedback", "user_text": follow_q, "ai_reply": ans_f, "time": datetime.datetime.now().strftime("%H:%M")})
+                    save_active_sessions()
+                    st.rerun()
+
+elif page == "Bảng tin":
+    if not st.session_state.news_session:
+        src = st.selectbox("Chọn nguồn:", ["Từ Giáo trình", "JOT (LWW)", "JBJS (LWW)", "Injury (Elsevier)"])
+        if src == "Từ Giáo trình":
+            if st.button("🎲 Bốc thăm 4 chuyên đề ngẫu nhiên từ sách", type="primary"):
+                books = st.session_state.get("_books", all_books_in_db)
+                if books:
+                    with st.spinner("⏳ Đang rút ngẫu nhiên chuyên đề từ giáo trình..."):
+                        ph_books = ",".join("?" * len(books))
+                        with get_db() as conn: sample = conn.execute(f"SELECT book, page, text FROM pages WHERE book IN ({ph_books}) ORDER BY RANDOM() LIMIT 8", books).fetchall()
+                        sample_text = "\n".join([f"[Trang {p}]: {t[:450]}" for _, p, t in sample])
+                        res = generate_ai_response(f"Dựa vào các trang sau:\n{sample_text}\nChọn 4 chủ đề Chấn thương Chỉnh hình KHÁC NHAU. Trả về đúng 4 dòng: Tên chủ đề | Mô tả ngắn.")
+                        st.session_state.news_headlines = [(p[0].replace('*', '').strip(), p[1].replace('*', '').strip()) for p in [line.split('|') for line in res.text.strip().split('\n') if '|' in line]]
+            if st.session_state.news_headlines:
+                st.markdown("---")
+                for i, (t, tz) in enumerate(st.session_state.news_headlines):
+                    with st.container(border=True):
+                        st.markdown(f"**{t}**"); st.caption(tz)
+                        if st.button("Mở đọc chuyên đề này", key=f"read_{i}"):
+                            st.session_state.news_session = {"query": t, "main_answer": "", "saved_id": None, "end_quiz": None, "end_quiz_submitted": False}
+                            save_active_sessions()
+                            st.rerun()
+        else:
+            urls = {"JOT (LWW)": "https://journals.lww.com/jorthotrauma/_layouts/15/OAKS.Journals/feed.aspx?FeedType=CurrentIssue", "JBJS (LWW)": "https://journals.lww.com/jbjsjournal/_layouts/15/OAKS.Journals/feed.aspx?FeedType=CurrentIssue", "Injury (Elsevier)": "https://rss.sciencedirect.com/publication/science/00201383"}
+            if st.button(f"Tải 5 bài báo mới nhất từ {src}", type="primary"):
+                with st.spinner(f"⏳ Đang tải bài báo từ {src}..."):
+                    try:
+                        with urlopen(Request(urls[src], headers={"User-Agent": "Mozilla/5.0"}), timeout=8) as r: root = ET.fromstring(r.read())
+                        st.session_state.rss_items = [{"title": (it.findtext("title") or "").strip(), "link": (it.findtext("link") or "").strip()} for it in root.findall(".//item")[:5]]
+                    except Exception: st.warning("Không kết nối được nguồn RSS này.")
+            for i, it in enumerate(st.session_state.get("rss_items", [])):
+                with st.container(border=True):
+                    st.markdown(f"**{i+1}. {it['title']}**"); st.markdown(f"[Xem bài gốc]({it['link']})")
+                    if st.button("Phân tích chủ đề này", key=f"rss_an_{i}"):
+                        st.session_state.news_session = {"query": it["title"], "main_answer": "", "saved_id": None, "end_quiz": None, "end_quiz_submitted": False}
+                        save_active_sessions()
+                        st.rerun()
+    else:
+        ns = st.session_state.news_session
+        if st.button("⬅️ Quay lại Bảng tin", key="back_news_btn"):
+            st.session_state.news_session = None
+            save_active_sessions()
+            st.rerun()
+        st.markdown(f"## {ns['query']}")
+        if not ns["main_answer"]:
+            with st.spinner("⏳ Đang biên soạn bài chuyên đề 8 phần (kèm mục Hậu phẫu & Dặn dò)..."):
+                ctx, mp, _ = smart_route_pages(ns["query"], st.session_state.get("_books", all_books_in_db), max_pages=6)
+                ans_news = stream_ai_response(f"TÀI LIỆU:\n{ctx}\n{PEDAGOGICAL_STYLE_RULES}\nCHỦ ĐỀ: '{ns['query']}'\n{ARTICLE_8_PART_TEMPLATE}", query_text=ns["query"])
+                ns.update({"matched_pages": mp, "main_answer": ans_news})
+                save_active_sessions()
+                gc.collect()
+                st.rerun()
+
+        render_article_and_recall(ns["main_answer"], key_prefix="news_main")
+        display_cited_pages(ns["main_answer"], key_prefix="news_cite", candidate_pages=ns.get("matched_pages", []))
+
+        st.markdown("---")
+        cn1, cn2 = st.columns([2, 2])
+        with cn1:
+            news_tags = st.text_input("Tags:", value="bảng tin, chuyên đề", key="news_tag_in", label_visibility="collapsed")
+        with cn2:
+            saved_exists = any(str(it.get("id")) == str(ns.get("saved_id")) for it in st.session_state.library)
+            if not ns.get("saved_id") or not saved_exists:
+                if st.button("💾 Lưu bài viết này vào Kho", key="news_save_btn", type="primary", use_container_width=True):
+                    ns["saved_id"] = save_to_library("Bảng tin", ns["query"][:65], ns["main_answer"], tags=[t.strip() for t in news_tags.split(",") if t.strip()])
+                    save_active_sessions()
+            else:
+                if st.button("✅ Đã lưu (Bấm để cập nhật lại)", key="news_upd_btn", type="primary", use_container_width=True):
+                    ns["saved_id"] = update_library_item(ns["saved_id"], ns["query"][:65], ns["main_answer"], tags=[t.strip() for t in news_tags.split(",") if t.strip()])
+                    save_active_sessions()
+
+        render_end_of_article_quiz_widget(ns["query"], ns["main_answer"], ns, "news_end_quiz")
+
+elif page == "Kho bài viết":
+    c1, c2, c3, c4 = st.columns([2, 1, 1, 1.2])
+    with c1: kw = st.text_input("🔍 Tìm kiếm bài viết:", key="lib_search")
+    with c2: f_type = st.selectbox("Phân loại:", ["Tất cả"] + sorted(set(i.get("type", "Khác") for i in st.session_state.library)))
+    with c3: f_tag = st.selectbox("Tag:", ["Tất cả"] + sorted({t for i in st.session_state.library for t in (i.get("tags") or [])}))
+    with c4:
+        st.write("")
+        if st.button("➕ Tạo bài viết trống mới", type="primary", use_container_width=True):
+            save_to_library("Tự soạn", "Bài ghi chép mới", "<p>Nhập nội dung ghi chép tại đây...</p>", tags=["ghi chép"])
+            st.rerun()
+
+    any_editing_active = False
+    if not st.session_state.library:
+        st.info("Kho lưu trữ hiện đang trống. Hãy lưu bài từ mục Hỏi đáp, Bảng tin hoặc bấm 'Tạo bài viết trống mới'.")
+    else:
+        for idx, item in enumerate(reversed(st.session_state.library)):
+            title = item.get("title", ""); content = item.get("content", ""); tags = item.get("tags") or []
+            if kw.lower() and kw.lower() not in title.lower() and kw.lower() not in content.lower(): continue
+            if f_type != "Tất cả" and item.get("type") != f_type: continue
+            if f_tag != "Tất cả" and f_tag not in tags: continue
+
+            iid = item["id"]
+            tag_label = " | Tags: " + ", ".join(tags) if tags else ""
+            with st.expander(f"[{item.get('type', 'Bài lưu')}] {title} ({item.get('time', '')}{tag_label})"):
+                c_e, c_img, c_d = st.columns([1.4, 1.4, 1])
+                with c_e: is_edit = st.toggle("✏️ Chỉnh sửa (Word Editor)", key=f"e_{iid}_{idx}")
+                with c_img: show_img = st.toggle("📖 Xem trang gốc", key=f"img_{iid}_{idx}")
+                with c_d:
+                    if st.button("🗑️ Xóa", key=f"d_{iid}_{idx}", use_container_width=True): delete_from_library(iid); st.rerun()
+
+                if is_edit:
+                    any_editing_active = True
+                    st.info("👈 **Thanh công cụ dọc** đã xuất hiện bên trái! Kéo bài viết tới đâu thanh công cụ sẽ trượt theo tới đó. Chọn **Bút Tô (🟨, 🟩, 🟦, 🩷)** trên thanh dọc rồi quét chuột qua chữ để tô màu tự động!")
+                    new_t = st.text_input("Tiêu đề bài viết:", value=title, key=f"et_{iid}_{idx}")
+                    new_tags = st.text_input("Tags (phân cách bằng dấu phẩy):", value=", ".join(tags), key=f"etg_{iid}_{idx}")
+
+                    try:
+                        import markdown
+                        clean_raw = clean_cite_spans_for_storage(content)
+                        is_already_html = any(tag in clean_raw for tag in ["<p>", "<img", "<strong>", "<h1>", "<h2>", "<h3>", "<ul"])
+                        html_content = clean_raw if is_already_html else markdown.markdown(clean_raw, extensions=['tables', 'fenced_code'])
+                        
+                        new_c_html = st_quill(
+                            value=html_content,
+                            html=True,
+                            toolbar=WORD_LIKE_TOOLBAR,
+                            key=f"quill_{iid}_{idx}"
+                        )
+                        inject_floating_vertical_toolbar()
+
+                        if st.button("💾 Lưu thay đổi bài viết", key=f"sv_{iid}_{idx}", type="primary", use_container_width=True):
+                            saved_body = new_c_html if (new_c_html and len(new_c_html.strip()) > 0) else html_content
+                            update_library_item(iid, new_t, saved_body, tags=[t.strip() for t in new_tags.split(",") if t.strip()])
+                            st.rerun()
+                    except Exception as e:
+                        st.warning(f"Đang dùng trình sửa văn bản dự phòng: {e}")
+                        new_c = st.text_area("Nội dung:", value=clean_cite_spans_for_storage(content), height=450, key=f"ec_{iid}_{idx}")
+                        if st.button("💾 Lưu thay đổi", key=f"sv_fb_{iid}_{idx}", type="primary"):
+                            update_library_item(iid, new_t, new_c, tags=[t.strip() for t in new_tags.split(",") if t.strip()])
+                            st.rerun()
+                else:
+                    clean_view = clean_cite_spans_for_storage(content)
+                    if any(tag in clean_view for tag in ["<p>", "<img", "<strong>"]):
+                        st.markdown(format_small_citations(clean_view), unsafe_allow_html=True)
+                    else:
+                        render_article_and_recall(clean_view, key_prefix=f"lib_art_{iid}_{idx}")
+                    if show_img: display_cited_pages(clean_view, key_prefix=f"lib_{iid}_{idx}")
+
+                    lib_q_state = st.session_state.lib_quizzes.setdefault(iid, {"end_quiz": None, "end_quiz_submitted": False})
+                    render_end_of_article_quiz_widget(title, clean_view, lib_q_state, f"lib_q_{iid}_{idx}")
+
+    if not any_editing_active:
+        hide_floating_vertical_toolbar()
+
+elif page == "Trực Cấp cứu":
+    er_books = get_thct_emergency_books(all_books_in_db, st.session_state.get("_books", all_books_in_db))
+    thct_detected = [b for b in all_books_in_db if "thct" in b.lower()]
+    if thct_detected:
+        st.success(f"📚 **Nguồn sách cấp cứu đang kích hoạt:** `{', '.join(thct_detected)}`")
+    else:
+        st.info("💡 Đang sử dụng các sách hiện có trong Kệ sách. Nếu bạn mới thêm sách `thct` vào Drive, hãy bấm nút **'🔄 Đồng bộ lại kho sách từ Google Drive'** ở cột bên trái.")
+
+    topic = st.text_input("Chủ đề ca bệnh (bỏ trống để bốc thăm ngẫu nhiên từ sách thct):", key="er_topic_in")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🚑 Bắt đầu ca trực mới", type="primary", use_container_width=True):
+            with st.spinner("⏳ Đang rút tình huống cấp cứu lâm sàng từ sách thct..."):
+                if topic.strip():
+                    ctx, _, _ = smart_route_pages(topic, er_books, max_pages=8)
+                else:
+                    ph_b = ",".join("?" * len(er_books))
+                    with get_db() as conn:
+                        sample = conn.execute(f"SELECT book, page, text FROM pages WHERE book IN ({ph_b}) ORDER BY RANDOM() LIMIT 8", er_books).fetchall()
+                    ctx = "\n\n".join(f"=== SÁCH: {b} | TRANG {p} ===\n{t[:2500]}" for b, p, t in sample)
+                ans_er = stream_ai_response(f"Bạn là BS Trưởng tua trực Chấn thương Chỉnh hình. Dựa sát vào TÀI LIỆU SÁCH CẤP CỨU (thct) dưới đây:\n{ctx[:18000]}\nTạo BƯỚC 1/3: bệnh cảnh lâm sàng cấp cứu thực tế. CHƯA tiết lộ chẩn đoán xác định và X-quang. Đặt 3 câu hỏi thử thách xử trí ban đầu. Cần gạch đầu dòng rõ ràng. Chủ đề: {topic or 'Tình huống cấp cứu từ sách thct'}", query_text=topic)
+                st.session_state.er_chat = [{"role": "assistant", "content": ans_er}]
+                st.session_state.er_case_active = True
+                save_active_sessions()
+                log_activity()
+                st.rerun()
+    with c2:
+        if st.button("Xóa ca trực", use_container_width=True):
+            st.session_state.er_chat = []
+            st.session_state.er_case_active = False
+            save_active_sessions()
+            st.rerun()
+
+    if st.session_state.er_case_active:
+        for i, m in enumerate(st.session_state.er_chat):
+            with st.chat_message(m["role"]):
+                render_article_and_recall(m["content"], key_prefix=f"er_msg_{i}")
+                if m["role"] == "assistant": display_cited_pages(m["content"], key_prefix=f"er_{i}")
+
+        u = st.chat_input("Nhập xử trí của bạn (Nhấn Enter để gửi)...")
+        if u:
+            st.session_state.er_chat.append({"role": "user", "content": u})
+            with st.chat_message("user"): st.markdown(u)
+            with st.chat_message("assistant"):
+                with st.spinner("⏳ BS Trưởng tua đang chấm điểm và đối chiếu sách thct..."):
+                    ctx, _, _ = smart_route_pages((topic or "") + " " + u, er_books, max_pages=8)
+                    history_log = "\n".join([f"[{m['role']}]: {m['content']}" for m in st.session_state.er_chat])
+                    er_prompt = (
+                        f"TÀI LIỆU SÁCH CẤP CỨU (thct):\n{ctx[:18000]}\n"
+                        f"DIỄN BIẾN:\n{history_log}\n"
+                        f"{PEDAGOGICAL_STYLE_RULES}\n"
+                        "1. Chấm điểm (thang 100), giải thích chi tiết đúng/sai theo sát phác đồ sách thct kèm [Trang X] bằng dạng list rõ ràng, in hoa tiêu đề.\n"
+                        "2. Chuyển bước tiếp theo (Bước 1->2 cung cấp X-quang/CLS; Bước 2->3 hỏi kế hoạch phẫu thuật/bảo tồn, theo dõi hậu phẫu & PHCN; xong Bước 3 tổng kết + sơ đồ ```dot``` + 3 câu hỏi ôn tập ===ON_TAP===)."
+                    )
+                    reply_er = stream_ai_response(er_prompt, query_text=u)
+            st.session_state.er_chat.append({"role": "assistant", "content": reply_er})
+            save_active_sessions()
+            st.rerun()
+
+        ch, cs = st.columns(2)
+        with ch:
+            if st.button("💡 Xin gợi ý", use_container_width=True):
+                last_msg = st.session_state.er_chat[-1]["content"]
+                st.info(generate_ai_response(f"Đưa ra 3 gợi ý ngắn gọn gạch đầu dòng cho tình huống:\n{last_msg}").text)
+        with cs:
+            if st.button("💾 Lưu ca trực vào Kho", use_container_width=True):
+                er_full_text = "\n\n---\n\n".join([f"**{m['role'].upper()}:**\n{m['content']}" for m in st.session_state.er_chat])
+                save_to_library("Trực Cấp Cứu", topic or "Ca lâm sàng cấp cứu (thct)", er_full_text, tags=["case", "ER", "thct"])
+
+elif page == "Tạo thẻ Anki":
+    topic = st.chat_input("Nhập chủ đề cần tạo 10 thẻ Flashcard (Nhấn Enter để tạo)...")
+    if topic:
+        with st.spinner("⏳ Đang biên soạn 10 thẻ Flashcard Anki..."):
+            ctx, _, _ = smart_route_pages(topic, st.session_state.get("_books", all_books_in_db), max_pages=8)
+            raw_anki = stream_ai_response(f"Tạo 10 Flashcard (Hỏi - Đáp giải thích sâu cơ chế giải phẫu/sinh cơ học/theo dõi hậu phẫu dạng gạch đầu dòng kèm [Trang X]) về: {topic}.\nPhần 1: Hiển thị đọc trên web.\nPhần 2: Đặt trong khối ```csv\nMặt trước ; Mặt sau\n``` để import vào Anki.\nNguồn:\n{ctx}", query_text=topic)
+            csv_m = re.search(r'```csv\n(.*?)\n```', raw_anki, re.DOTALL)
+            st.session_state.anki_session = {"topic": topic, "display": re.sub(r'```csv\n.*?\n```', '', raw_anki, flags=re.DOTALL), "csv": csv_m.group(1) if csv_m else None}
+            save_active_sessions()
+            log_activity()
+            st.rerun()
+
+    ak = st.session_state.anki_session
+    if ak:
+        c1, c2 = st.columns(2)
+        with c1:
+            if ak.get("csv"): st.download_button("📥 Tải file .CSV Import vào Anki", data=ak["csv"].encode("utf-8-sig"), file_name=f"anki_{datetime.date.today()}.csv", mime="text/csv", use_container_width=True)
+        with c2:
+            if st.button("💾 Lưu bộ thẻ vào Kho bài viết", use_container_width=True): save_to_library("Anki", ak["topic"], ak["display"], tags=["anki"])
+        st.markdown("---"); st.markdown(format_small_citations(ak["display"]), unsafe_allow_html=True)
+
+elif page == "X-quang":
+    cl, cr = st.columns([1, 1])
+    img_bytes = None
+    with cl:
+        f = st.file_uploader("Chọn ảnh X-quang / CT / MRI / Giải phẫu (PNG, JPG):", type=["png", "jpg", "jpeg"])
+        if f: img_bytes = f.read(); st.image(img_bytes, use_container_width=True)
+    with cr:
+        mode = st.selectbox("Chế độ phân tích:", ["Đọc phim X-quang / CT-scan, Các góc đo & Phân loại", "Phân tích Đường mổ, Gian cơ & Thần kinh nguy cơ", "Đố vui nhận diện mốc Giải phẫu (Active Recall)"])
+        note = st.text_input("Câu hỏi hoặc vùng cần chú ý trên hình:")
+        if st.button("🔍 Phân tích hình ảnh", type="primary", use_container_width=True):
+            if not img_bytes: st.warning("Vui lòng tải lên 1 hình ảnh trước.")
+            else:
+                with st.spinner("⏳ Đang phân tích hình ảnh bằng AI Vision..."):
+                    part = types.Part.from_bytes(data=img_bytes, mime_type="image/png")
+                    if "Đố vui" in mode: p = f"Chọn 5 mốc giải phẫu/dụng cụ trên hình ({note}), đặt 5 câu hỏi nhận diện gạch đầu dòng. Đặt đáp án chi tiết sau dòng '--- ĐÁP ÁN ---'."
+                    elif "Đường mổ" in mode: p = f"Phân tích chi tiết đường mổ trên hình ({note}): liệt kê từng lớp giải phẫu, khoảng gian thần kinh và cấu trúc mạch máu/thần kinh nguy cơ cao bằng gạch đầu dòng."
+                    else: p = f"Đọc phim X-quang/giải thích hình ảnh ({note}) thật chi tiết: gạch đầu dòng mô tả tổn thương, cơ chế di lệch, các góc đo giải phẫu, hướng xử trí và lưu ý theo dõi hậu phẫu."
+                    res = generate_ai_response([part, p])
+                    st.session_state.xray_session = {"title": note or mode[:35], "content": res.text}; log_activity()
+
+        xs = st.session_state.xray_session
+        if xs:
+            if "--- ĐÁP ÁN ---" in xs["content"]:
+                a, b = xs["content"].split("--- ĐÁP ÁN ---", 1)
+                st.markdown(a)
+                with st.expander("Xem Đáp án"): st.markdown(b)
+            else: st.markdown(xs["content"])
+            if st.button("💾 Lưu bài phân tích vào Kho", type="primary"): save_to_library("X-quang", xs["title"], xs["content"], tags=["xray"])
+
+elif page == "USMLE & SRS":
+    due_list = get_due_mistakes()
+    t1, t2, t3 = st.tabs(["Làm Đề USMLE", f"Sổ Tay Câu Sai ({len(st.session_state.mistakes)})", f"Ôn SRS Hôm Nay ({len(due_list)})"])
+
+    with t1:
+        c1, c2 = st.columns([3, 1])
+        with c1: topic = st.text_input("Chủ đề Quiz (Để trống = ngẫu nhiên):")
+        with c2: n_q = st.number_input("Số câu:", 1, 10, 4)
+
+        if st.button("📝 Tạo đề trắc nghiệm", type="primary"):
+            books = st.session_state.get("_books", all_books_in_db)
+            if not books: st.warning("Vui lòng chọn sách ở thanh bên trái.")
+            else:
+                with st.spinner("⏳ Đang thiết kế câu hỏi tình huống lâm sàng USMLE..."):
+                    if not topic.strip():
+                        ph_books = ",".join("?" * len(books))
+                        with get_db() as conn: sample = conn.execute(f"SELECT book, page, text FROM pages WHERE book IN ({ph_books}) ORDER BY RANDOM() LIMIT 8", books).fetchall()
+                        ctx = "\n\n".join(f"[SÁCH:{b} | TRANG {p}]\n{t[:2500]}" for b, p, t in sample)
+                        target = "Chủ đề ngẫu nhiên"
+                    else: ctx, _, _ = smart_route_pages(topic, books, max_pages=8); target = topic.strip()
+
+                    prompt = f"""TÀI LIỆU:\n{ctx[:20000]}
+Tạo đúng {n_q} câu USMLE Step 2 CK về: {target}.
+ĐỊNH DẠNG BẮT BUỘC CHO MỖI CÂU:
+===CAU_HOI===
+[Tình huống lâm sàng chi tiết + Câu hỏi]
+===LUA_CHON===
+A. [...]
+B. [...]
+C. [...]
+D. [...]
+E. [...]
+===DAP_AN===
+[A/B/C/D/E]
+===GIAI_THICH===
+- **Đáp án đúng:** [Giải thích sâu cơ chế giải phẫu, sinh cơ học dạng gạch đầu dòng kèm [Trang X]]
+- **Phân tích phương án nhiễu:** [Gạch đầu dòng giải thích tại sao các đáp án khác sai]
+===KET_THUC===
+"""
+                    res = generate_ai_response(prompt)
+                    qs = parse_usmle_questions(res.text)
+                    if qs: st.session_state.interactive_quiz = {"topic": target, "questions": qs, "submitted": False}; st.rerun()
+                    else: st.error("Chưa tách được câu hỏi, vui lòng bấm Tạo đề lại.")
+
+        iq = st.session_state.interactive_quiz
+        if iq and "questions" in iq:
+            user_sel = {}
+            for qi, qit in enumerate(iq["questions"]):
+                with st.container(border=True):
+                    st.markdown(f"**Câu {qi+1}:**\n\n{qit['question']}")
+                    choice = st.radio(f"Chọn đáp án câu {qi+1}:", qit["options"], index=None, key=f"uq_{iq['topic']}_{qi}")
+                    user_sel[qi] = choice
+                    if iq["submitted"]:
+                        if (choice or "")[:1].upper() == qit["answer"][0].upper(): st.success(f"Chính xác! ({qit['answer'][0].upper()})")
+                        else: st.error(f"Sai. Bạn chọn {(choice or '—')[:1].upper()} | Đáp án đúng: {qit['answer'][0].upper()}")
+                        st.markdown(format_small_citations(qit["explanation"]), unsafe_allow_html=True)
+
+            if not iq["submitted"]:
+                if st.button("Nộp bài & Chấm điểm", type="primary", use_container_width=True):
+                    iq["submitted"] = True
+                    correct = sum(1 for qi, qit in enumerate(iq["questions"]) if (user_sel.get(qi) or "")[:1].upper() == qit["answer"][0].upper())
+                    for qi, qit in enumerate(iq["questions"]):
+                        if (user_sel.get(qi) or "")[:1].upper() != qit["answer"][0].upper():
+                            add_to_mistake_bank(qit, user_sel.get(qi) or "Chưa chọn", iq["topic"])
+                    st.session_state.progress["quizzes"] = st.session_state.progress.get("quizzes", 0) + 1
+                    st.session_state.progress["correct"] = st.session_state.progress.get("correct", 0) + correct
+                    save_json_file(PROGRESS_FILE, st.session_state.progress)
+                    log_activity()
+                    st.rerun()
+
+    with t2:
+        if not st.session_state.mistakes:
+            st.success("Sổ tay câu sai hiện đang trống.")
+        else:
+            for i, m in enumerate(reversed(st.session_state.mistakes)):
+                with st.expander(f"[{m.get('topic', '')}] {m['question'][:80]}..."):
+                    st.markdown(m["question"])
+                    for o in m.get("options", []):
+                        st.markdown(f"- {o}")
+                    st.markdown(format_small_citations(f"**Đáp án đúng: {m['answer']}**\n\n{m.get('explanation', '')}"), unsafe_allow_html=True)
+                    if st.button("Xóa khỏi sổ tay", key=f"dms_{i}"):
+                        st.session_state.mistakes = [x for x in st.session_state.mistakes if x.get("id") != m.get("id")]
+                        save_json_file(MISTAKES_FILE, st.session_state.mistakes)
+                        st.rerun()
+
+    with t3:
+        if not due_list:
+            st.success("Hôm nay không có câu hỏi nào đến hạn ôn tập SRS.")
+        else:
+            for idx, m in enumerate(due_list[:10]):
+                with st.container(border=True):
+                    st.caption(f"Chủ đề: {m.get('topic', '')} | Lần lặp: {m.get('repetitions', 0)} | Ease: {m.get('ease', 2.5):.2f}")
+                    st.markdown(m["question"])
+                    for opt in m.get("options", []):
+                        st.markdown(f"- {opt}")
+                    with st.expander("Xem đáp án & Đánh giá trí nhớ (SM-2)"):
+                        st.markdown(format_small_citations(f"**Đáp án: {m['answer']}**\n\n{m.get('explanation', '')}"), unsafe_allow_html=True)
+                        c1, c2, c3 = st.columns(3)
+                        for col, (lbl, q_val) in zip([c1, c2, c3], [("Quên (0)", 0), ("Khó (3)", 3), ("Dễ (5)", 5)]):
+                            with col:
+                                if st.button(lbl, key=f"srs_{m['id']}_{q_val}", use_container_width=True):
+                                    sm2_update(m, q_val)
+                                    save_json_file(MISTAKES_FILE, st.session_state.mistakes)
+                                    st.rerun()
+
+elif page == "Tạo Slide":
+    topic = st.chat_input("Nhập chủ đề Slide báo cáo (Nhấn Enter để tạo)...")
+    if topic:
+        with st.spinner("⏳ Đang thiết kế cấu trúc 8 Slide thuyết trình và xuất file PowerPoint..."):
+            ctx, _, _ = smart_route_pages(topic, st.session_state.get("_books", all_books_in_db), max_pages=8)
+            raw_slide = stream_ai_response(f"""Thiết kế 8 slide thuyết trình chi tiết về "{topic}" (bao gồm cả slide theo dõi hậu phẫu & biến chứng). Mỗi slide đúng định dạng:
+### SLIDE [số]: [Tiêu đề]
+- Ý 1 (Diễn giải chi tiết 3-4 câu)
+- Ý 2 (Diễn giải chi tiết 3-4 câu)
+- Ý 3 (Diễn giải chi tiết 3-4 câu)
+**Ghi chú thuyết trình:** (Giải thích thật sâu cơ chế giải phẫu, sinh cơ học dạng list kèm [Trang X])
+Nguồn: {ctx}""", query_text=topic)
+            st.session_state.slide_session = {"topic": topic, "text": raw_slide, "pptx": create_pptx_bytes(topic, raw_slide)}
+            log_activity()
+            st.rerun()
+
+    ss = st.session_state.slide_session
+    if ss:
+        st.markdown("### Chỉnh sửa Outline trước khi xuất file .PPTX")
+        edited = st.text_area("Nội dung Outline (Có thể sửa trực tiếp):", value=ss["text"], height=320)
+        if edited != ss["text"]:
+            ss["text"] = edited
+            ss["pptx"] = create_pptx_bytes(ss["topic"], ss["text"])
+
+        c1, c2 = st.columns(2)
+        with c1:
+            safe_fname = re.sub(r'[^A-Za-z0-9_]', '_', ss["topic"][:25])
+            if ss.get("pptx"): st.download_button("📥 Tải file PowerPoint (.PPTX)", data=ss["pptx"], file_name=f"Slide_{safe_fname}.pptx", mime="application/vnd.openxmlformats-officedocument.presentationml.presentation", use_container_width=True)
+        with c2:
+            if st.button("💾 Lưu Outline vào Kho bài viết", use_container_width=True): save_to_library("Slide", ss["topic"], ss["text"], tags=["slide"])
