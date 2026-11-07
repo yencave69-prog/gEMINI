@@ -495,34 +495,28 @@ def create_pptx_bytes(topic_title, raw_slide_text):
     buf = io.BytesIO(); prs.save(buf); buf.seek(0)
     return buf.getvalue()
 
-# ==================== 4. AI ENGINE SIÊU TỐC ====================
-DEFAULT_MODEL = "gemini-flash-lite-latest"
-# Các model Google đã tắt hẳn -> tuyệt đối không gọi (gọi sẽ lỗi + mất thời gian thử lại)
-_RETIRED_PREFIXES = ("gemini-2.0",)
-
+# ==================== 4. AI ENGINE CHUẨN XÁC & SIÊU TỐC ====================
 @st.cache_data(ttl=3600, show_spinner=False)
 def scan_available_models(active_key: str):
-    fallback = ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-pro-latest"]
-    if not active_key: return fallback, False
-    try:
-        models = [
-            m.name.replace("models/", "")
-            for m in genai.Client(api_key=active_key).models.list()
-            if "latest" in m.name.lower()
-            and ("gemini" in m.name.lower() or "gemma" in m.name.lower())
-            and not any(ex in m.name.lower() for ex in ["2.0", "2.5", "embedding", "imagen", "veo", "audio", "tts", "aqa", "learnlm", "robotics"])
-        ]
-        if not models: return fallback, True
-        models = sorted(set(models), key=lambda n: (0 if n.lower() == DEFAULT_MODEL else 1 if n.lower() == "gemini-flash-latest" else 2 if "flash" in n.lower() else 3, n))
-        if DEFAULT_MODEL not in models: models.insert(0, DEFAULT_MODEL)
-        return models, True
-    except Exception:
-        return fallback, False
+    # Sử dụng các tên định danh chính thức của Google Gemini API
+    official_models = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash", 
+        "gemini-1.5-flash",
+        "gemini-1.5-pro"
+    ]
+    if not active_key: 
+        return official_models, False
+    return official_models, True
 
 def _get_fallback_models():
-    primary = st.session_state.get("selected_model", DEFAULT_MODEL)
-    if primary.lower().startswith(_RETIRED_PREFIXES): primary = DEFAULT_MODEL
-    candidates = [primary, "gemini-flash-lite-latest", "gemini-flash-latest"]
+    primary = st.session_state.get("selected_model", "gemini-2.5-flash")
+    candidates = [
+        primary, 
+        "gemini-2.5-flash", 
+        "gemini-2.0-flash", 
+        "gemini-1.5-flash"
+    ]
     seen = set()
     return [m for m in candidates if not (m in seen or seen.add(m))]
 
