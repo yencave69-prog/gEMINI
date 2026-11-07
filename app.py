@@ -495,15 +495,23 @@ def create_pptx_bytes(topic_title, raw_slide_text):
     buf = io.BytesIO(); prs.save(buf); buf.seek(0)
     return buf.getvalue()
 
-# ==================== 4. AI ENGINE: ĐẦY ĐỦ CÁC MODEL LATEST (FLASH, LITE & PRO) ====================
-@st.cache_data(ttl=3600, show_spinner=False)
+# ==================== 4. AI ENGINE: KẾT NỐI V1BETA CHUẨN XÁC ====================
+def get_v1beta_client(api_key: str):
+    try:
+        return genai.Client(api_key=api_key, http_options=types.HttpOptions(api_version="v1beta"))
+    except Exception:
+        try:
+            return genai.Client(api_key=api_key, http_options={"api_version": "v1beta"})
+        except Exception:
+            return genai.Client(api_key=api_key)
+
+@st.cache_data(ttl=60, show_spinner=False)
 def scan_available_models(active_key: str):
-    """Lấy đầy đủ các model đuôi -latest (bao gồm cả gemini-flash-lite-latest, gemini-flash-latest, gemini-pro-latest)"""
     default_latest = ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest"]
     if not active_key:
         return default_latest, False
     try:
-        client = genai.Client(api_key=active_key)
+        client = get_v1beta_client(active_key)
         valid_latest = []
         for m in client.models.list():
             name = m.name.replace("models/", "")
@@ -512,9 +520,8 @@ def scan_available_models(active_key: str):
                 ex in low for ex in ["embedding", "imagen", "veo", "audio", "tts", "aqa", "learnlm", "robotics"]
             ):
                 valid_latest.append(name)
-        for d_m in default_latest:
-            if d_m not in valid_latest:
-                valid_latest.append(d_m)
+        if not valid_latest:
+            return default_latest, True
         valid_latest = sorted(
             list(set(valid_latest)),
             key=lambda n: (
@@ -528,56 +535,29 @@ def scan_available_models(active_key: str):
     except Exception:
         return default_latest, False
 
-def _get_fallback_models():
-    primary = st.session_state.get("selected_model", "gemini-flash-latest")
-    # Chỉ giữ lại đúng 3 model đuôi -latest, tuyệt đối không gọi gemini-2.0-flash nữa
-    candidates = [primary, "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest"]
-    seen = set()
-    return [m for m in candidates if not (m in seen or seen.add(m))]
-
-def _build_configs_for_model(model_name: str, temp=0.3, max_tok=6000):
-    """Tạo danh sách cấu hình an toàn: với dòng Pro không ép thinking_budget=0 để tránh lỗi 400"""
-    std_cfg = types.GenerateContentConfig(temperature=temp, max_output_tokens=max_tok)
-    if "pro" in model_name.lower():
-        return [std_cfg]
-    try:
-        fast_cfg = types.GenerateContentConfig(
-            temperature=temp,
-            max_output_tokens=max_tok,
-            thinking_config=types.ThinkingConfig(thinking_budget=0)
-        )
-        return [fast_cfg, std_cfg]
-    except Exception:
-        return [std_cfg]
-
 def generate_ai_response(prompt_text):
     k = get_active_api_key()
     if not k:
         st.error("⚠️ Bạn chưa nhập GEMINI_API_KEY. Hãy mở mục 'Cập nhật API Key' ở cột bên trái.")
         st.stop()
-    client = genai.Client(api_key=k)
+    client = get_v1beta_client(k)
+    model_name = st.session_state.get("selected_model", "gemini-flash-latest")
+    cfg = types.GenerateContentConfig(temperature=0.3, max_output_tokens=6000)
     last_err = None
-    with st.spinner("⏳ Đang xử lý dữ liệu với AI..."):
-        for model_name in _get_fallback_models():
-            for cfg in _build_configs_for_model(model_name, 0.3, 6000):
-                try:
-                    return client.models.generate_content(
-                        model=model_name,
-                        contents=prompt_text,
-                        config=cfg
-                    )
-                except Exception as e:
-                    last_err = e
-                    err_str = str(e)
-                    if "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str:
-                        st.error("❌ Lỗi xác thực API Key. Hãy kiểm tra lại khóa API ở cột bên trái.")
-                        st.stop()
-                    # Nếu lỗi 404 (model không tồn tại trên endpoint này), chuyển sang model tiếp theo
-                    if "404" in err_str or "NOT_FOUND" in err_str:
-                        break
-                    # Nếu lỗi do tham số config (400), thử ngay cấu hình chuẩn tiếp theo của CHÍNH model đang chọn
-                    continue
-    st.error(f"⚠️ Máy chủ AI đang quá tải tạm thời. Vui lòng bấm gửi lại sau vài giây! ({last_err})")
+
+    with st.spinner(f"⏳ Đang xử lý dữ liệu với {model_name}..."):
+        for attempt in range(3):
+            try:
+                return client.models.generate_content(model=model_name, contents=prompt_text, config=cfg)
+            except Exception as e:
+                last_err = e
+                err_str = str(e)
+                if "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str:
+                    st.error("❌ Lỗi xác thực API Key (401). Hãy kiểm tra lại khóa API ở cột bên trái.")
+                    st.stop()
+                time.sleep(1.2 * (attempt + 1))
+
+    st.error(f"⚠️ Mô hình `{model_name}` hiện đang bận. Vui lòng thử lại hoặc đổi mô hình khác ở cột bên trái! ({last_err})")
     st.stop()
 
 def stream_ai_response(prompt_text, visual_page_keys=None, query_text=""):
@@ -585,7 +565,7 @@ def stream_ai_response(prompt_text, visual_page_keys=None, query_text=""):
     if not k:
         st.error("⚠️ Bạn chưa nhập GEMINI_API_KEY. Hãy mở mục 'Cập nhật API Key' ở cột bên trái.")
         st.stop()
-    client = genai.Client(api_key=k)
+    client = get_v1beta_client(k)
     contents = []
 
     need_vision = any(w in query_text.lower() for w in ["hình", "ảnh", "x-quang", "xquang", "phim", "ct", "mri", "sơ đồ"])
@@ -597,73 +577,56 @@ def stream_ai_response(prompt_text, visual_page_keys=None, query_text=""):
 
     contents.append(prompt_text)
 
+    model_name = st.session_state.get("selected_model", "gemini-flash-latest")
+    cfg = types.GenerateContentConfig(temperature=0.3, max_output_tokens=6000)
+
     placeholder = st.empty()
-    selected_m = st.session_state.get("selected_model", "gemini-flash-latest")
-    placeholder.info(f"⚡ **Đang nhận phản hồi trực tiếp từ {selected_m}...**")
-    
+    placeholder.info(f"⚡ **Đang kết nối trực tiếp tới `{model_name}`...**")
+
     full_text = ""
     last_err = None
 
-    for model_name in _get_fallback_models():
-        for cfg in _build_configs_for_model(model_name, 0.3, 6000):
-            try:
-                full_text = ""
-                last_render_time = 0
-                for chunk in client.models.generate_content_stream(
-                    model=model_name,
-                    contents=contents,
-                    config=cfg
-                ):
-                    if chunk.text:
-                        full_text += chunk.text
-                        now = time.time()
-                        if now - last_render_time > 0.12:
-                            placeholder.markdown(format_small_citations(full_text + " ▌"), unsafe_allow_html=True)
-                            last_render_time = now
-                if full_text.strip():
-                    placeholder.empty()
-                    return full_text
-            except Exception as e:
-                last_err = e
-                err_str = str(e)
-                if "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str:
-                    placeholder.empty()
-                    st.error("❌ Lỗi xác thực API Key (401). Hãy kiểm tra lại khóa API ở cột bên trái.")
-                    st.stop()
-                if len(full_text) > 300:
-                    placeholder.empty()
-                    return full_text
-                if "404" in err_str or "NOT_FOUND" in err_str:
-                    break
-                continue
+    for attempt in range(3):
+        try:
+            full_text = ""
+            last_render_time = 0
+            for chunk in client.models.generate_content_stream(model=model_name, contents=contents, config=cfg):
+                if chunk.text:
+                    full_text += chunk.text
+                    now = time.time()
+                    if now - last_render_time > 0.12:
+                        placeholder.markdown(format_small_citations(full_text + " ▌"), unsafe_allow_html=True)
+                        last_render_time = now
+            if full_text.strip():
+                placeholder.empty()
+                return full_text
+        except Exception as e:
+            last_err = e
+            err_str = str(e)
+            if "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str:
+                placeholder.empty()
+                st.error("❌ Lỗi xác thực API Key (401). Hãy kiểm tra lại khóa API ở cột bên trái.")
+                st.stop()
+            if len(full_text) > 300:
+                placeholder.empty()
+                return full_text
+            placeholder.info(f"⏳ **Máy chủ `{model_name}` đang bận tích tắc, đang thử lại (Lần {attempt + 1}/3)...**")
+            time.sleep(1.5 * (attempt + 1))
 
     placeholder.empty()
-    st.error(f"⚠️ Máy chủ AI đang bận tạm thời. Vui lòng thử lại sau vài giây! ({last_err})")
+    st.error(f"⚠️ Mô hình `{model_name}` đang quá tải tạm thời. Vui lòng bấm gửi lại hoặc chọn mô hình khác ở cột bên trái! ({last_err})")
     st.stop()
 
 @st.cache_data(max_entries=100, show_spinner=False)
 def translate_to_vietnamese_cached(raw_text: str):
-    if not raw_text or not raw_text.strip():
-        return ""
+    if not raw_text or not raw_text.strip(): return ""
     try:
-        client = genai.Client(api_key=get_active_api_key())
-        prompt = (
-            "Dịch toàn bộ đoạn văn bản y khoa Chấn thương Chỉnh hình sau đây sang Tiếng Việt chuẩn xác, "
-            "rõ ràng, giữ nguyên các số hiệu hình ảnh (như Fig, Table) và cấu trúc đoạn. "
-            "Chỉ trả về nội dung bản dịch Tiếng Việt, không thêm lời bình:\n\n" + raw_text[:4500]
-        )
-        for m in _get_fallback_models():
-            for cfg in _build_configs_for_model(m, 0.2, 4096):
-                try:
-                    res = client.models.generate_content(
-                        model=m,
-                        contents=prompt,
-                        config=cfg
-                    )
-                    if res and res.text:
-                        return res.text.strip()
-                except Exception:
-                    continue
+        client = get_v1beta_client(get_active_api_key())
+        prompt = "Dịch toàn bộ đoạn văn bản y khoa Chấn thương Chỉnh hình sau đây sang Tiếng Việt chuẩn xác, giữ nguyên số hiệu hình ảnh:\n\n" + raw_text[:4500]
+        model_name = st.session_state.get("selected_model", "gemini-flash-latest")
+        res = client.models.generate_content(model=model_name, contents=prompt, config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=4096))
+        return res.text.strip() if (res and res.text) else raw_text
+    except Exception:
         return raw_text
     except Exception:
         return raw_text
