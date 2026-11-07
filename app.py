@@ -143,7 +143,7 @@ def get_active_api_key():
         sk = st.secrets.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
         if sk and sk != "AQ.xxx": return sk
     except Exception: pass
-    return ""
+    return "AQ.Ab8RN6IVfc-wewsRumOJ-eZF0Y0bedH16oIhp_o4KNHNbK05Cg"
 
 def save_api_key_everywhere(new_key: str):
     clean_k = new_key.strip().strip('"').strip("'")
@@ -386,7 +386,7 @@ _defaults = {
     "xray_session": lambda: None,
     "interactive_quiz": lambda: None,
     "slide_session": lambda: None,
-    "selected_model": lambda: "gemini-flash-lite-latest",
+    "selected_model": lambda: "gemini-flash-latest",
     "_books": lambda: list(all_books_in_db),
     "current_page": lambda: "Hỏi đáp",
     "translated_pages_cache": dict,
@@ -495,11 +495,11 @@ def create_pptx_bytes(topic_title, raw_slide_text):
     buf = io.BytesIO(); prs.save(buf); buf.seek(0)
     return buf.getvalue()
 
-# ==================== 4. AI ENGINE: CHỈ LẤY MODEL LATEST SIÊU TỐC ====================
+# ==================== 4. AI ENGINE: ĐẦY ĐỦ CÁC MODEL LATEST (FLASH, LITE & PRO) ====================
 @st.cache_data(ttl=3600, show_spinner=False)
 def scan_available_models(active_key: str):
-    """Chỉ lấy các model đuôi -latest của dòng Flash (bỏ qua toàn bộ model pro và model cố định gây chậm/lỗi 404)"""
-    default_latest = ["gemini-flash-lite-latest", "gemini-flash-latest"]
+    """Lấy đầy đủ các model đuôi -latest (bao gồm cả gemini-flash-lite-latest, gemini-flash-latest, gemini-pro-latest)"""
+    default_latest = ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest"]
     if not active_key:
         return default_latest, False
     try:
@@ -508,36 +508,47 @@ def scan_available_models(active_key: str):
         for m in client.models.list():
             name = m.name.replace("models/", "")
             low = name.lower()
-            if "latest" in low and "flash" in low and "pro" not in low:
+            if "latest" in low and ("gemini" in low or "gemma" in low) and not any(
+                ex in low for ex in ["embedding", "imagen", "veo", "audio", "tts", "aqa", "learnlm", "robotics"]
+            ):
                 valid_latest.append(name)
-        if not valid_latest:
-            return default_latest, True
+        for d_m in default_latest:
+            if d_m not in valid_latest:
+                valid_latest.append(d_m)
         valid_latest = sorted(
             list(set(valid_latest)),
-            key=lambda x: (0 if "lite" in x.lower() else 1, x)
+            key=lambda n: (
+                0 if n.lower() == "gemini-flash-latest" else
+                1 if n.lower() == "gemini-flash-lite-latest" else
+                2 if n.lower() == "gemini-pro-latest" else 3,
+                n
+            )
         )
         return valid_latest, True
     except Exception:
         return default_latest, False
 
 def _get_fallback_models():
-    avail, _ = scan_available_models(get_active_api_key())
-    primary = st.session_state.get("selected_model", avail[0] if avail else "gemini-flash-lite-latest")
-    candidates = [primary] + [m for m in avail if m != primary]
+    primary = st.session_state.get("selected_model", "gemini-flash-latest")
+    # Chỉ dùng các model ổn định làm dự phòng, tránh trượt vào model 404
+    candidates = [primary, "gemini-flash-latest", "gemini-pro-latest", "gemini-2.0-flash"]
     seen = set()
     return [m for m in candidates if not (m in seen or seen.add(m))]
 
-def _build_fast_config(temp=0.3, max_tok=6000, disable_thinking=True):
-    if disable_thinking:
-        try:
-            return types.GenerateContentConfig(
-                temperature=temp,
-                max_output_tokens=max_tok,
-                thinking_config=types.ThinkingConfig(thinking_budget=0)
-            )
-        except Exception:
-            pass
-    return types.GenerateContentConfig(temperature=temp, max_output_tokens=max_tok)
+def _build_configs_for_model(model_name: str, temp=0.3, max_tok=6000):
+    """Tạo danh sách cấu hình an toàn: với dòng Pro không ép thinking_budget=0 để tránh lỗi 400"""
+    std_cfg = types.GenerateContentConfig(temperature=temp, max_output_tokens=max_tok)
+    if "pro" in model_name.lower():
+        return [std_cfg]
+    try:
+        fast_cfg = types.GenerateContentConfig(
+            temperature=temp,
+            max_output_tokens=max_tok,
+            thinking_config=types.ThinkingConfig(thinking_budget=0)
+        )
+        return [fast_cfg, std_cfg]
+    except Exception:
+        return [std_cfg]
 
 def generate_ai_response(prompt_text):
     k = get_active_api_key()
@@ -548,9 +559,8 @@ def generate_ai_response(prompt_text):
     last_err = None
     with st.spinner("⏳ Đang xử lý dữ liệu với AI..."):
         for model_name in _get_fallback_models():
-            for disable_th in [True, False]:
+            for cfg in _build_configs_for_model(model_name, 0.3, 6000):
                 try:
-                    cfg = _build_fast_config(0.3, 6000, disable_thinking=disable_th)
                     return client.models.generate_content(
                         model=model_name,
                         contents=prompt_text,
@@ -562,9 +572,11 @@ def generate_ai_response(prompt_text):
                     if "401" in err_str or "UNAUTHENTICATED" in err_str or "API_KEY_INVALID" in err_str:
                         st.error("❌ Lỗi xác thực API Key. Hãy kiểm tra lại khóa API ở cột bên trái.")
                         st.stop()
-                    if "thinking" in err_str.lower() and disable_th:
-                        continue
-                    break
+                    # Nếu lỗi 404 (model không tồn tại trên endpoint này), chuyển sang model tiếp theo
+                    if "404" in err_str or "NOT_FOUND" in err_str:
+                        break
+                    # Nếu lỗi do tham số config (400), thử ngay cấu hình chuẩn tiếp theo của CHÍNH model đang chọn
+                    continue
     st.error(f"⚠️ Máy chủ AI đang quá tải tạm thời. Vui lòng bấm gửi lại sau vài giây! ({last_err})")
     st.stop()
 
@@ -586,15 +598,15 @@ def stream_ai_response(prompt_text, visual_page_keys=None, query_text=""):
     contents.append(prompt_text)
 
     placeholder = st.empty()
-    placeholder.info("⚡ **Đang nhận phản hồi trực tiếp từ AI...**")
+    selected_m = st.session_state.get("selected_model", "gemini-flash-latest")
+    placeholder.info(f"⚡ **Đang nhận phản hồi trực tiếp từ {selected_m}...**")
     
     full_text = ""
     last_err = None
 
     for model_name in _get_fallback_models():
-        for disable_th in [True, False]:
+        for cfg in _build_configs_for_model(model_name, 0.3, 6000):
             try:
-                cfg = _build_fast_config(0.3, 6000, disable_thinking=disable_th)
                 full_text = ""
                 last_render_time = 0
                 for chunk in client.models.generate_content_stream(
@@ -621,9 +633,9 @@ def stream_ai_response(prompt_text, visual_page_keys=None, query_text=""):
                 if len(full_text) > 300:
                     placeholder.empty()
                     return full_text
-                if "thinking" in err_str.lower() and disable_th:
-                    continue
-                break
+                if "404" in err_str or "NOT_FOUND" in err_str:
+                    break
+                continue
 
     placeholder.empty()
     st.error(f"⚠️ Máy chủ AI đang bận tạm thời. Vui lòng thử lại sau vài giây! ({last_err})")
@@ -641,16 +653,17 @@ def translate_to_vietnamese_cached(raw_text: str):
             "Chỉ trả về nội dung bản dịch Tiếng Việt, không thêm lời bình:\n\n" + raw_text[:4500]
         )
         for m in _get_fallback_models():
-            try:
-                res = client.models.generate_content(
-                    model=m,
-                    contents=prompt,
-                    config=_build_fast_config(0.2, 4096, disable_thinking=True)
-                )
-                if res and res.text:
-                    return res.text.strip()
-            except Exception:
-                continue
+            for cfg in _build_configs_for_model(m, 0.2, 4096):
+                try:
+                    res = client.models.generate_content(
+                        model=m,
+                        contents=prompt,
+                        config=cfg
+                    )
+                    if res and res.text:
+                        return res.text.strip()
+                except Exception:
+                    continue
         return raw_text
     except Exception:
         return raw_text
