@@ -530,8 +530,8 @@ def scan_available_models(active_key: str):
 
 def _get_fallback_models():
     primary = st.session_state.get("selected_model", "gemini-flash-latest")
-    # Chỉ dùng các model ổn định làm dự phòng, tránh trượt vào model 404
-    candidates = [primary, "gemini-flash-latest", "gemini-pro-latest", "gemini-2.0-flash"]
+    # Chỉ giữ lại đúng 3 model đuôi -latest, tuyệt đối không gọi gemini-2.0-flash nữa
+    candidates = [primary, "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest"]
     seen = set()
     return [m for m in candidates if not (m in seen or seen.add(m))]
 
