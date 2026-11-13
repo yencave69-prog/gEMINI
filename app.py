@@ -408,7 +408,8 @@ def get_due_mistakes():
     return [m for m in st.session_state.mistakes if m.get("next_review", "2000-01-01") <= today_str]
 
 def clean_cite_spans_for_storage(text: str):
-    return re.sub(r'<span\s+class=["\']cite-tag["\']>(.*?)</span>', r'\1', text or "")
+    cleaned = re.sub(r'<span\s+class=["\']cite-tag["\']>(.*?)</span>', r'\1', text or "")
+    return re.sub(r'`+(\s*\[\s*[^\]]*?[Tt]rang\s*\d+[^\]]*?\]\s*)`+', r'\1', cleaned)
 
 def save_to_library(item_type, title, content, tags=None):
     disk_lib = load_json_file(LIBRARY_FILE, [])
@@ -495,7 +496,7 @@ def create_pptx_bytes(topic_title, raw_slide_text):
     buf = io.BytesIO(); prs.save(buf); buf.seek(0)
     return buf.getvalue()
 
-# ==================== 4. AI ENGINE: CẬP NHẬT GEMINI 4 HYDROGEN ====================
+# ==================== 4. AI ENGINE: GEMINI 4 HYDROGEN & CHỐNG CẮT CỤT BÀI VIẾT ====================
 def get_v1beta_client(api_key: str):
     try:
         return genai.Client(api_key=api_key, http_options=types.HttpOptions(api_version="v1beta"))
@@ -555,7 +556,7 @@ def generate_ai_response(prompt_text):
         st.stop()
     client = get_v1beta_client(k)
     model_name = st.session_state.get("selected_model", "gemini-4-hydrogen")
-    cfg = types.GenerateContentConfig(temperature=0.3, max_output_tokens=6000)
+    cfg = types.GenerateContentConfig(temperature=0.3, max_output_tokens=65536)
     last_err = None
 
     with st.spinner(f"⏳ Đang xử lý dữ liệu với {model_name}..."):
@@ -591,7 +592,7 @@ def stream_ai_response(prompt_text, visual_page_keys=None, query_text=""):
     contents.append(prompt_text)
 
     model_name = st.session_state.get("selected_model", "gemini-4-hydrogen")
-    cfg = types.GenerateContentConfig(temperature=0.3, max_output_tokens=6000)
+    cfg = types.GenerateContentConfig(temperature=0.3, max_output_tokens=65536)
 
     placeholder = st.empty()
     placeholder.info(f"⚡ **Đang kết nối trực tiếp tới `{model_name}`...**")
@@ -607,9 +608,25 @@ def stream_ai_response(prompt_text, visual_page_keys=None, query_text=""):
                 if chunk.text:
                     full_text += chunk.text
                     now = time.time()
-                    if now - last_render_time > 0.12:
+                    if now - last_render_time > 0.15:
                         placeholder.markdown(format_small_citations(full_text + " ▌"), unsafe_allow_html=True)
                         last_render_time = now
+
+            if full_text.strip() and len(full_text) < 2500 and "===HET_ON_TAP===" not in full_text:
+                placeholder.markdown(format_small_citations(full_text + "\n\n⏳ *Đang tải tiếp phần còn lại của bài viết...*"), unsafe_allow_html=True)
+                cont_prompt = (
+                    f"{prompt_text}\n\n---\n"
+                    f"BÀI VIẾT ĐANG VIẾT DỞ ĐẾN ĐÂY:\n{full_text}\n\n---\n"
+                    f"YÊU CẦU: Hãy viết TIẾP TỤC ngay từ chỗ đang bị dừng ở trên cho đến hết đầy đủ tất cả các mục còn lại (đến hết mục cuối, sơ đồ dot và 3 câu hỏi ===ON_TAP===). Không lặp lại phần đã viết."
+                )
+                for chunk2 in client.models.generate_content_stream(model=model_name, contents=[cont_prompt], config=cfg):
+                    if chunk2.text:
+                        full_text += chunk2.text
+                        now = time.time()
+                        if now - last_render_time > 0.15:
+                            placeholder.markdown(format_small_citations(full_text + " ▌"), unsafe_allow_html=True)
+                            last_render_time = now
+
             if full_text.strip():
                 placeholder.empty()
                 return full_text
@@ -620,9 +637,20 @@ def stream_ai_response(prompt_text, visual_page_keys=None, query_text=""):
                 placeholder.empty()
                 st.error("❌ Lỗi xác thực API Key (401). Hãy kiểm tra lại khóa API ở cột bên trái.")
                 st.stop()
-            if len(full_text) > 300:
-                placeholder.empty()
-                return full_text
+            if len(full_text) > 150:
+                try:
+                    cont_prompt = (
+                        f"{prompt_text}\n\n---\nBÀI ĐANG VIẾT DỞ:\n{full_text}\n\n---\n"
+                        "Hãy viết TIẾP TỤC ngay từ câu đang bỏ dở ở trên cho đến hết toàn bộ các phần còn lại của bài học."
+                    )
+                    res_rem = client.models.generate_content(model=model_name, contents=[cont_prompt], config=cfg)
+                    if res_rem and res_rem.text:
+                        full_text += "\n" + res_rem.text
+                    placeholder.empty()
+                    return full_text
+                except Exception:
+                    placeholder.empty()
+                    return full_text
             placeholder.info(f"⏳ **Máy chủ `{model_name}` đang bận tích tắc, đang thử lại (Lần {attempt + 1}/3)...**")
             time.sleep(1.5 * (attempt + 1))
 
@@ -637,7 +665,7 @@ def translate_to_vietnamese_cached(raw_text: str):
         client = get_v1beta_client(get_active_api_key())
         prompt = "Dịch toàn bộ đoạn văn bản y khoa Chấn thương Chỉnh hình sau đây sang Tiếng Việt chuẩn xác, giữ nguyên số hiệu hình ảnh:\n\n" + raw_text[:4500]
         model_name = st.session_state.get("selected_model", "gemini-4-hydrogen")
-        res = client.models.generate_content(model=model_name, contents=prompt, config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=4096))
+        res = client.models.generate_content(model=model_name, contents=prompt, config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=8192))
         return res.text.strip() if (res and res.text) else raw_text
     except Exception:
         return raw_text
@@ -649,7 +677,7 @@ NGUYÊN TẮC TRÌNH BÀY BẮT BUỘC ĐỂ TRÁNH KHỐI CHỮ DÀY ĐẶC:
    - Các tiêu đề lớn phải dùng `1.`, `2.`, `3.` kèm IN HOA VÀ TÔ ĐẬM. (Ví dụ: **1. ĐẠI CƯƠNG VÀ CƠ CHẾ**, **5. NGUYÊN TẮC & PHÁC ĐỒ ĐIỀU TRỊ**, **6. THEO DÕI HẬU PHẪU, BIẾN CHỨNG & DẶN DÒ BỆNH NHÂN**).
    - Dưới mỗi tiêu đề lớn, mọi phương pháp hay nguyên tắc bắt buộc phải xuống dòng và dùng Gạch đầu dòng (`-`).
    - Mở đầu mỗi gạch đầu dòng, từ khóa phải TÔ ĐẬM.
-3. Trong mỗi gạch đầu dòng (`-`), diễn giải dài và sâu (5-8 câu), cung cấp đầy đủ các số liệu định lượng (độ, mm, tuần lễ) và cơ chế giải phẫu/sinh lý bệnh kèm [Trang X].
+3. Trong mỗi gạch đầu dòng (`-`), diễn giải dài và sâu (5-8 câu), cung cấp đầy đủ các số liệu định lượng (độ, mm, tuần lễ) và cơ chế giải phẫu/sinh lý bệnh kèm [Trang X] (TUYỆT ĐỐI KHÔNG đặt [Trang X] trong dấu backtick `).
 4. Lập **Bảng (Markdown Table)** khi cần so sánh. Cuối mỗi phần quan trọng đóng khung blockquote (`>`) đúc kết mẹo lâm sàng.
 5. BẮT BUỘC Ở CUỐI MỖI BÀI VIẾT: Phải có mục **🎯 CÂU HỎI TỰ LƯỢNG GIÁ & ÔN TẬP (ACTIVE RECALL)** gồm đúng 3 câu hỏi tư duy lâm sàng/cơ chế cốt lõi giúp người đọc tự kiểm tra lại kiến thức vừa đọc. Sử dụng đúng định dạng sau cho mỗi câu hỏi:
 ===ON_TAP===
@@ -659,7 +687,7 @@ Câu hỏi: [Nội dung câu hỏi suy luận ngắn gọn, xoáy sâu vào cơ 
 """
 
 ARTICLE_8_PART_TEMPLATE = """
-TRÌNH BÀY BÀI SOẠN 8 PHẦN CHUẨN LÂM SÀNG (CÁC TIÊU ĐỀ LỚN PHẢI IN HOA VÀ TÔ ĐẬM):
+TRÌNH BÀY BÀI SOẠN ĐẦY ĐỦ 8 PHẦN CHUẨN LÂM SÀNG TỪ MỤC 1 ĐẾN MỤC 8 (CÁC TIÊU ĐỀ LỚN PHẢI IN HOA VÀ TÔ ĐẬM, KHÔNG ĐƯỢC DỪNG GIỮA CHỪNG):
 **1. TỔNG QUAN, ĐỊNH NGHĨA & GIẢI PHẪU - SINH CƠ HỌC**
 **2. PHÂN LOẠI TỔN THƯƠNG & Ý NGHĨA LÂM SÀNG (KÈM BẢNG MARKDOWN)**
 **3. TRIỆU CHỨNG LÂM SÀNG & CƠ CHẾ HÌNH THÀNH DẤU HIỆU**
@@ -682,6 +710,7 @@ Cuối bài kèm sơ đồ ```dot ... ``` và 3 câu hỏi ôn tập trong cặp
 
 def format_small_citations(text: str):
     cleaned = clean_cite_spans_for_storage(text)
+    cleaned = re.sub(r'`+(\s*\[\s*[^\]]*?[Tt]rang\s*\d+[^\]]*?\]\s*)`+', r'\1', cleaned)
     return re.sub(r'(\[\s*(?:[^\]]*?[Tt]rang\s*\d+[^\]]*?)\s*\])', r'<span class="cite-tag">\1</span>', cleaned)
 
 def parse_usmle_questions(raw_text):
@@ -1337,9 +1366,9 @@ if page == "Hỏi đáp":
 
                 if not use_8:
                     prompt = f"""TÀI LIỆU GIÁO TRÌNH:\n{ctx}\n\nCÂU HỎI: "{query}"\n\n{PEDAGOGICAL_STYLE_RULES}
-TRÌNH BÀY DẠNG LIST CHO TỪNG Ý LỚN DƯỚI ĐÂY (TIÊU ĐỀ LỚN PHẢI IN HOA VÀ TÔ ĐẬM):
+TRÌNH BÀY ĐẦY ĐỦ DẠNG LIST CHO TỪNG Ý LỚN DƯỚI ĐÂY (TIÊU ĐỀ LỚN PHẢI IN HOA VÀ TÔ ĐẬM, VIẾT HOÀN CHỈNH ĐẾN HẾT MỤC 6):
 **1. TRẢ LỜI TRỰC DIỆN & BẢN CHẤT CƠ CHẾ:**
-**2. PHÂN TÍCH LÂM SÀNG, CẬN LÂM SÀNG & XỬ TRÍ:** (Dùng gạch đầu dòng riêng kèm `[Trang X]`)
+**2. PHÂN TÍCH LÂM SÀNG, CẬN LÂM SÀNG & XỬ TRÍ:** (Dùng gạch đầu dòng riêng kèm [Trang X])
 **3. THEO DÕI HẬU PHẪU, BIẾN CHỨNG & DẶN DÒ BỆNH NHÂN:** (Khám gì sau mổ, biến chứng cần canh chừng, lưu ý và dặn dò bệnh nhân khi xuất viện)
 **4. MẸO GHI NHỚ LÂU:** (Đặt trong blockquote `>`)
 **5. SƠ ĐỒ THUẬT TOÁN** ```dot ... ```
