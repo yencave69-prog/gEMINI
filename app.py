@@ -386,7 +386,7 @@ _defaults = {
     "xray_session": lambda: None,
     "interactive_quiz": lambda: None,
     "slide_session": lambda: None,
-    "selected_model": lambda: "gemini-flash-latest",
+    "selected_model": lambda: "gemini-4-hydrogen",
     "_books": lambda: list(all_books_in_db),
     "current_page": lambda: "Hỏi đáp",
     "translated_pages_cache": dict,
@@ -495,7 +495,7 @@ def create_pptx_bytes(topic_title, raw_slide_text):
     buf = io.BytesIO(); prs.save(buf); buf.seek(0)
     return buf.getvalue()
 
-# ==================== 4. AI ENGINE: KẾT NỐI V1BETA CHUẨN XÁC ====================
+# ==================== 4. AI ENGINE: CẬP NHẬT GEMINI 4 HYDROGEN ====================
 def get_v1beta_client(api_key: str):
     try:
         return genai.Client(api_key=api_key, http_options=types.HttpOptions(api_version="v1beta"))
@@ -507,33 +507,46 @@ def get_v1beta_client(api_key: str):
 
 @st.cache_data(ttl=60, show_spinner=False)
 def scan_available_models(active_key: str):
-    default_latest = ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest"]
+    default_models = [
+        "gemini-4-hydrogen",
+        "gemini-flash-lite-latest",
+        "gemini-pro-latest",
+        "gemini-flash-latest"
+    ]
     if not active_key:
-        return default_latest, False
+        return default_models, False
     try:
         client = get_v1beta_client(active_key)
-        valid_latest = []
+        valid_models = []
         for m in client.models.list():
             name = m.name.replace("models/", "")
             low = name.lower()
-            if "latest" in low and ("gemini" in low or "gemma" in low) and not any(
-                ex in low for ex in ["embedding", "imagen", "veo", "audio", "tts", "aqa", "learnlm", "robotics"]
+            if ("hydrogen" in low or "latest" in low or "argon" in low or "carbon" in low) and (
+                "gemini" in low or "gemma" in low
+            ) and not any(
+                ex in low for ex in ["embedding", "imagen", "veo", "audio", "tts", "aqa", "learnlm", "robotics", "banana", "omni", "live"]
             ):
-                valid_latest.append(name)
-        if not valid_latest:
-            return default_latest, True
-        valid_latest = sorted(
-            list(set(valid_latest)),
-            key=lambda n: (
-                0 if n.lower() == "gemini-flash-latest" else
-                1 if n.lower() == "gemini-flash-lite-latest" else
-                2 if n.lower() == "gemini-pro-latest" else 3,
-                n
-            )
+                valid_models.append(name)
+
+        for d_m in default_models:
+            if d_m not in valid_models:
+                valid_models.append(d_m)
+
+        priority_order = {
+            "gemini-4-hydrogen": 0,
+            "gemini-hydrogen-latest": 1,
+            "gemini-flash-lite-latest": 2,
+            "gemini-pro-latest": 3,
+            "gemini-4-argon": 4,
+            "gemini-flash-latest": 5,
+        }
+        valid_models = sorted(
+            list(set(valid_models)),
+            key=lambda n: (priority_order.get(n.lower(), 99), n)
         )
-        return valid_latest, True
+        return valid_models, True
     except Exception:
-        return default_latest, False
+        return default_models, False
 
 def generate_ai_response(prompt_text):
     k = get_active_api_key()
@@ -541,7 +554,7 @@ def generate_ai_response(prompt_text):
         st.error("⚠️ Bạn chưa nhập GEMINI_API_KEY. Hãy mở mục 'Cập nhật API Key' ở cột bên trái.")
         st.stop()
     client = get_v1beta_client(k)
-    model_name = st.session_state.get("selected_model", "gemini-flash-latest")
+    model_name = st.session_state.get("selected_model", "gemini-4-hydrogen")
     cfg = types.GenerateContentConfig(temperature=0.3, max_output_tokens=6000)
     last_err = None
 
@@ -577,7 +590,7 @@ def stream_ai_response(prompt_text, visual_page_keys=None, query_text=""):
 
     contents.append(prompt_text)
 
-    model_name = st.session_state.get("selected_model", "gemini-flash-latest")
+    model_name = st.session_state.get("selected_model", "gemini-4-hydrogen")
     cfg = types.GenerateContentConfig(temperature=0.3, max_output_tokens=6000)
 
     placeholder = st.empty()
@@ -623,11 +636,9 @@ def translate_to_vietnamese_cached(raw_text: str):
     try:
         client = get_v1beta_client(get_active_api_key())
         prompt = "Dịch toàn bộ đoạn văn bản y khoa Chấn thương Chỉnh hình sau đây sang Tiếng Việt chuẩn xác, giữ nguyên số hiệu hình ảnh:\n\n" + raw_text[:4500]
-        model_name = st.session_state.get("selected_model", "gemini-flash-latest")
+        model_name = st.session_state.get("selected_model", "gemini-4-hydrogen")
         res = client.models.generate_content(model=model_name, contents=prompt, config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=4096))
         return res.text.strip() if (res and res.text) else raw_text
-    except Exception:
-        return raw_text
     except Exception:
         return raw_text
 
@@ -1226,7 +1237,7 @@ with st.sidebar:
     if new_dark != dark_mode: st.session_state.settings["dark_mode"] = new_dark; save_json_file(SETTINGS_FILE, st.session_state.settings); st.rerun()
 
     avail_models, key_ok = scan_available_models(API_KEY)
-    st.markdown("Mô hình AI (Latest):")
+    st.markdown("Mô hình AI (Hydrogen / Latest):")
     current_m = st.session_state.get("selected_model", avail_models[0])
     if current_m not in avail_models:
         current_m = avail_models[0]
