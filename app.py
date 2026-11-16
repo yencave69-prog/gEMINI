@@ -68,26 +68,100 @@ WORD_LIKE_TOOLBAR = [
     ["clean"]
 ]
 
-def load_json_file(filepath, default_val):
-    if not os.path.exists(filepath): return default_val
+import base64
+
+def _github_sync_request(filename, method="GET", content_bytes=None):
     try:
-        with open(filepath, "r", encoding="utf-8") as f: return json.load(f)
+        token = st.secrets.get("GITHUB_TOKEN", "").strip()
+        repo = st.secrets.get("GITHUB_REPO", "").strip()
+    except Exception:
+        return None
+    if not token or not repo:
+        return None
+
+    url = f"https://api.github.com/repos/{repo}/contents/data_backup/{filename}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Streamlit-Ortho-App"
+    }
+
+    if method == "GET":
+        try:
+            req = Request(url, headers=headers, method="GET")
+            with urlopen(req, timeout=10) as resp:
+                res_data = json.loads(resp.read().decode("utf-8"))
+                return base64.b64decode(res_data["content"]).decode("utf-8")
+        except Exception:
+            return None
+
+    elif method == "PUT" and content_bytes is not None:
+        sha = None
+        try:
+            req_get = Request(url, headers=headers, method="GET")
+            with urlopen(req_get, timeout=10) as resp:
+                sha = json.loads(resp.read().decode("utf-8")).get("sha")
+        except Exception:
+            pass
+
+        payload = {
+            "message": f"Auto-backup {filename}",
+            "content": base64.b64encode(content_bytes).decode("utf-8")
+        }
+        if sha:
+            payload["sha"] = sha
+
+        try:
+            req_put = Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="PUT")
+            with urlopen(req_put, timeout=15) as resp:
+                return resp.status in (200, 201)
+        except Exception:
+            return False
+
+def load_json_file(filepath, default_val):
+    fname = os.path.basename(filepath)
+    if not os.path.exists(filepath) and fname in (LIBRARY_FILE, MISTAKES_FILE, PROGRESS_FILE):
+        remote_raw = _github_sync_request(fname, method="GET")
+        if remote_raw:
+            try:
+                parsed = json.loads(remote_raw)
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(remote_raw)
+                return parsed
+            except Exception:
+                pass
+
+    if not os.path.exists(filepath):
+        return default_val
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
         bak = filepath + ".bak"
         if os.path.exists(bak):
             try:
-                with open(bak, "r", encoding="utf-8") as f: return json.load(f)
-            except Exception: pass
+                with open(bak, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
         return default_val
 
 def save_json_file(filepath, data):
     try:
+        raw_str = json.dumps(data, ensure_ascii=False, indent=2)
         tmp = filepath + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(raw_str)
         if os.path.exists(filepath):
-            try: os.replace(filepath, filepath + ".bak")
-            except Exception: pass
+            try:
+                os.replace(filepath, filepath + ".bak")
+            except Exception:
+                pass
         os.replace(tmp, filepath)
+
+        fname = os.path.basename(filepath)
+        if fname in (LIBRARY_FILE, MISTAKES_FILE, PROGRESS_FILE):
+            _github_sync_request(fname, method="PUT", content_bytes=raw_str.encode("utf-8"))
     except Exception:
         pass
 
